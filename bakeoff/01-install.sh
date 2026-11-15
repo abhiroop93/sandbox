@@ -5,7 +5,10 @@ cd "$(dirname "$0")"; source env.sh
 
 log "installing agent-sandbox $AGENT_SANDBOX_VERSION"
 kubectl apply --server-side -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
-kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=180s
+# First install pulls the controller image onto fresh nodes: allow for a slow network.
+kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=600s || {
+  kubectl -n agent-sandbox-system get pods -o wide; kubectl -n agent-sandbox-system describe pods | tail -25
+  die "agent-sandbox controller not ready"; }
 
 kubectl create ns "$NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl create ns "$SYS_NS" --dry-run=client -o yaml | kubectl apply -f -

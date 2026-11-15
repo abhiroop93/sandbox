@@ -18,9 +18,10 @@ Two audiences:
 ## 2. Local setup (kind): about 15 minutes
 Prereqs: Docker Desktop (≥ 8 GB; 12+ GB recommended), kind, kubectl, helm, Go ≥ 1.25, Python 3 + `uv`.
 ```bash
-cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && ./02-templates.sh && cd ..
-#   kind cluster + gVisor on a tainted sandbox node, agent-sandbox, in-cluster S3 (rclone), RuntimeClass "gvisor"
-kubectl apply -f deploy/kind/agent-sandbox-config.yaml
+cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && cd ..
+#   kind cluster + gVisor on a tainted sandbox node, agent-sandbox, in-cluster S3 (rclone)
+kubectl apply -f deploy/kind/runtimeclass.yaml -f deploy/kind/agent-sandbox-config.yaml
+# (bakeoff/02-templates.sh is only for benchmarks: its warm pools need more memory than an 8 GB Docker has left)
 kubectl -n agent-sandbox-system rollout restart deploy/agent-sandbox-controller   # allowlist is read at startup
 make deploy                       # build → image srvm:dev → kind load → random Secrets (once) → apply Postgres + srvm
 kubectl -n srvm-system port-forward svc/srvm 18081:80      # API at http://127.0.0.1:18081

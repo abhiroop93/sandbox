@@ -154,7 +154,8 @@ Splitting is mechanical (separate packages) and is on the roadmap with explicit 
 One `SandboxTemplate` + `SandboxWarmPool` per image (created on first use), and one `SandboxClaim` per sandbox
 generation (deterministic name).
 - **Warm pods are generic.** Everything per-sandbox (identity, execd token hash, env) is pushed **after** the claim via
-  execd's `POST /internal/init`. Setting env or volumes on a claim forces agent-sandbox's cold path.
+  execd's `POST /internal/init`. A running pod's env and volumes can't be changed, so per-sandbox env or volumes on
+  the pod itself would rule out every warm pod and force a cold start.
 - Per-sandbox labels go through the claim's `additionalPodMetadata`. agent-sandbox requires their domain to be allowlisted
   (`allowed-label-domains: srvm.io`); this is an install requirement.
 - **Why agent-sandbox:**
@@ -364,7 +365,7 @@ Verified by the escape suite (13/13) and the demo (`quickstart/demo.py`).
 | System | Took | Rejected |
 |---|---|---|
 | **Daytona** | Sandbox-first product shape, stop/resume, dashboard ideas | Its code (AGPL-3.0; own runners, not K8s) |
-| **Modal** | Functions as claim → run → recycle; cold-start obsession | Proprietary scheduler on raw VMs |
-| **E2B** | In-sandbox daemon pattern | Firecracker + Nomad (needs KVM; not K8s) |
+| **Modal** | The functions programming model (`.remote()`, `.map()`) and its focus on cold starts; our functions layer is claim → run → recycle on the same pools (D1) | Proprietary; its own scheduler on cloud VMs |
+| **E2B** | The in-sandbox daemon pattern (its `envd`, our use of execd); the reference design for a future Firecracker tier (roadmap §2) | Firecracker + Nomad as the starting point: needs KVM nodes and isn't Kubernetes |
 | **OpenSandbox** | API contract, SDKs, execd + its `/internal/init` binding, console (trial) | Server, gateway, egress sidecar (gVisor-specific reasons, see D3) |
-| **agent-sandbox** | The substrate | Its router (strips auth); per-claim env/volumes (forces cold start) |
+| **agent-sandbox** | The substrate: templates, warm pools, claims | Its sandbox router: no auth by default, and its optional modes check a Kubernetes identity or a signed token rather than srvm tenants; it doesn't know sandbox states or add the per-sandbox execd token. Per-sandbox pod settings (env, volumes): a running warm pod can't change them, so they'd force a cold start; srvm sends them to execd after the claim instead (D4) |

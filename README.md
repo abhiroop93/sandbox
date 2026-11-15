@@ -21,8 +21,8 @@ SDKs** (Python, TypeScript, Go, Java, C#) work against it.
 ## Try it locally (about 15 minutes)
 Needs Docker (8 GB+ memory; 12 GB recommended), [kind](https://kind.sigs.k8s.io), kubectl, helm, Go 1.25+, Python 3 and [uv](https://docs.astral.sh/uv/).
 ```bash
-cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && ./02-templates.sh && cd ..   # kind + gVisor + agent-sandbox + S3
-kubectl apply -f deploy/kind/agent-sandbox-config.yaml
+cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && cd ..   # kind + gVisor + agent-sandbox + S3
+kubectl apply -f deploy/kind/runtimeclass.yaml -f deploy/kind/agent-sandbox-config.yaml
 kubectl -n agent-sandbox-system rollout restart deploy/agent-sandbox-controller
 make deploy                                               # build, generate secrets, deploy Postgres + srvm
 kubectl -n srvm-system port-forward svc/srvm 18081:80 &
