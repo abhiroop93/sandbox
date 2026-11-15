@@ -1,0 +1,431 @@
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+{
+  "test": "burst",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:56:47",
+  "pool": "locked",
+  "results": {
+    "5": {
+      "claim_ready_s": {
+        "n": 5,
+        "p50": 0.061,
+        "p90": 0.062,
+        "p99": 0.062,
+        "max": 0.062,
+        "mean": 0.061
+      },
+      "failures": 0,
+      "pool_size": 5,
+      "beyond_pool": 0
+    },
+    "10": {
+      "claim_ready_s": {
+        "n": 10,
+        "p50": 0.085,
+        "p90": 1.496,
+        "p99": 1.501,
+        "max": 1.501,
+        "mean": 0.776
+      },
+      "failures": 0,
+      "pool_size": 5,
+      "beyond_pool": 5
+    },
+    "25": {
+      "claim_ready_s": {
+        "n": 14,
+        "p50": 1.015,
+        "p90": 2.047,
+        "p99": 2.051,
+        "max": 2.051,
+        "mean": 1.215
+      },
+      "failures": 11,
+      "pool_size": 5,
+      "beyond_pool": 20
+    }
+  }
+}
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+{"rate_per_s": 2, "issued": 179, "claim_ready_s": {"n": 172, "p50": 3.338, "p90": 92.538, "p99": 114.646, "max": 115.141, "mean": 21.002}, "failures": 7, "frac_ready_under_2s": 0.151, "pool_ready_min": 0, "api_probe_s": {"n": 155, "p50": 0.005, "p90": 0.01, "p99": 0.013, "max": 0.018, "mean": 0.006}}
+ceiling breached at 2/s; stopping ramp
+{
+  "test": "ramp",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:59:27",
+  "pool": "locked",
+  "hold_s": 10,
+  "duration_s": 90,
+  "steps": [
+    {
+      "rate_per_s": 2,
+      "issued": 179,
+      "claim_ready_s": {
+        "n": 172,
+        "p50": 3.338,
+        "p90": 92.538,
+        "p99": 114.646,
+        "max": 115.141,
+        "mean": 21.002
+      },
+      "failures": 7,
+      "frac_ready_under_2s": 0.151,
+      "pool_ready_min": 0,
+      "api_probe_s": {
+        "n": 155,
+        "p50": 0.005,
+        "p90": 0.01,
+        "p99": 0.013,
+        "max": 0.018,
+        "mean": 0.006
+      }
+    }
+  ],
+  "max_healthy_rate_per_s": 0,
+  "healthy_def": "claim p99 < 5.0s, 0 failures, API probe p99 < 1s"
+}
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+{
+  "test": "density",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:02:31",
+  "sandbox_nodes": 1,
+  "max_ready": 10,
+  "per_node": 10.0,
+  "pending_at_stop": 2,
+  "steps": [
+    {
+      "replicas": 10,
+      "ready_s": 2.0
+    },
+    {
+      "replicas": 20,
+      "ready": 18,
+      "timeout": true
+    }
+  ],
+  "nodes": [
+    {
+      "node": "srvm-bakeoff-worker2",
+      "allocatable": {
+        "cpu": "11",
+        "ephemeral-storage": "61202244Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "hugepages-32Mi": "0",
+        "hugepages-64Ki": "0",
+        "memory": "8025220Ki",
+        "pods": "110"
+      }
+    }
+  ],
+  "note": "tiny = 100m/128Mi. Limits hit: CPU/mem requests, maxPods (110), or runsc overhead"
+}
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+# Bake-off results (kind-20261111, target=kind)
+
+> **kind run:** functional results (compat, escape, resume correctness) are valid; latency, ceiling
+> and density numbers reflect a laptop VM, not a cell. Re-run on GKE for capacity numbers.
+
+## Exit criteria
+
+| Check | Measured | Target | |
+|---|---|---|---|
+| Warm claim p99 | 0.065s | < 1s | ✅ |
+| Cold claim p99 | 2.999s | < 15s | ✅ |
+| Sustained claim ceiling | 0/s | ≥ 20/s | ❌ |
+| Resume 2048 MB end-to-end | 8.97s | < 10s | ✅ |
+| Workspace intact after resume | True | true | ✅ |
+| gVisor compat | 11/11 | all | ✅ |
+| Escape suite | 15/15 | 100% | ✅ |
+
+## burst
+
+```json
+{
+  "test": "burst",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:56:47",
+  "pool": "locked",
+  "results": {
+    "5": {
+      "claim_ready_s": {
+        "n": 5,
+        "p50": 0.061,
+        "p90": 0.062,
+        "p99": 0.062,
+        "max": 0.062,
+        "mean": 0.061
+      },
+      "failures": 0,
+      "pool_size": 5,
+      "beyond_pool": 0
+    },
+    "10": {
+      "claim_ready_s": {
+        "n": 10,
+        "p50": 0.085,
+        "p90": 1.496,
+        "p99": 1.501,
+        "max": 1.501,
+        "mean": 0.776
+      },
+      "failures": 0,
+      "pool_size": 5,
+      "beyond_pool": 5
+    },
+    "25": {
+      "claim_ready_s": {
+        "n": 14,
+        "p50": 1.015,
+        "p90": 2.047,
+        "p99": 2.051,
+        "max": 2.051,
+        "mean": 1.215
+      },
+      "failures": 11,
+      "pool_size": 5,
+      "beyond_pool": 20
+    }
+  }
+}
+```
+
+## compat
+
+```json
+{
+  "test": "compat",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:30:26",
+  "rows": [
+    {
+      "step": "pip_install",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 21.13,
+      "runc_s": 17.72,
+      "slowdown_x": 1.19
+    },
+    {
+      "step": "numpy_matmul",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.97,
+      "runc_s": 3.61,
+      "slowdown_x": 0.27
+    },
+    {
+      "step": "pandas_groupby",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.51,
+      "runc_s": 0.38,
+      "slowdown_x": 1.34
+    },
+    {
+      "step": "sklearn_fit",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.43,
+      "runc_s": 3.1,
+      "slowdown_x": 1.11
+    },
+    {
+      "step": "git_clone",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 2.51,
+      "runc_s": 1.57,
+      "slowdown_x": 1.6
+    },
+    {
+      "step": "git_ops",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.08,
+      "runc_s": 0.02,
+      "slowdown_x": 4.0
+    },
+    {
+      "step": "npm_install",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.31,
+      "runc_s": 2.67,
+      "slowdown_x": 1.24
+    },
+    {
+      "step": "pytest_200",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.49,
+      "runc_s": 0.26,
+      "slowdown_x": 1.88
+    },
+    {
+      "step": "sqlite_200k",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.2,
+      "runc_s": 0.13,
+      "slowdown_x": 1.54
+    },
+    {
+      "step": "small_files_20k",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 1.98,
+      "runc_s": 0.47,
+      "slowdown_x": 4.21
+    },
+    {
+      "step": "big_file_1g",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.19,
+      "runc_s": 1.84,
+      "slowdown_x": 1.73
+    }
+  ]
+}
+```
+
+## density
+
+```json
+{
+  "test": "density",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:02:31",
+  "sandbox_nodes": 1,
+  "max_ready": 10,
+  "per_node": 10.0,
+  "pending_at_stop": 2,
+  "steps": [
+    {
+      "replicas": 10,
+      "ready_s": 2.0
+    },
+    {
+      "replicas": 20,
+      "ready": 18,
+      "timeout": true
+    }
+  ],
+  "nodes": [
+    {
+      "node": "srvm-bakeoff-worker2",
+      "allocatable": {
+        "cpu": "11",
+        "ephemeral-storage": "61202244Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "hugepages-32Mi": "0",
+        "hugepages-64Ki": "0",
+        "memory": "8025220Ki",
+        "pods": "110"
+      }
+    }
+  ],
+  "note": "tiny = 100m/128Mi. Limits hit: CPU/mem requests, maxPods (110), or runsc overhead"
+}
+```
+
+## escape
+
+```json
+{
+  "test": "escape",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:06:01",
+  "all_pass": true,
+  "checks": [
+    {
+      "check": "gvisor_runtime",
+      "pass": true,
+      "detail": "Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016"
+    },
+    {
+      "check": "non_root",
+      "pass": true,
+      "detail": "uid=1000"
+    },
+    {
+      "check": "no_sa_token",
+      "pass": true,
+      "detail": "absent"
+    },
+    {
+      "check": "host_procs_hidden",
+      "pass": true,
+      "detail": "pids=5"
+    },
+    {
+      "check": "no_mount",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "no_sysctl_write",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "no_raw_socket",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "metadata_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "metadata_dns_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "k8s_api_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "internet_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "peer_sandbox_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "dns_works",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "check": "object_store_reachable",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "check": "peer_server_listening_control",
+      "pass": true,
+      "detail": "peer http.server answers on localhost (proves peer_sandbox_blocked is real)"
+    }
+  ],
+  "note": "metadata checks are only meaningful on a cloud cluster"
+}
+```
+
+written: bakeoff/results/kind-20261111/summary.md

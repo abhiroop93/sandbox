@@ -1,0 +1,16 @@
+{
+  "test": "latency_cold",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:17:48",
+  "claim_ready_s": {
+    "n": 10,
+    "p50": 2.012,
+    "p90": 2.022,
+    "p99": 2.999,
+    "max": 2.999,
+    "mean": 2.077
+  },
+  "failures": 0,
+  "note": "image pre-pulled; excludes node provisioning (+30-90s on cloud) and image pull"
+}

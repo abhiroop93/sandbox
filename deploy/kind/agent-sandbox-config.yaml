@@ -1,0 +1,10 @@
+# agent-sandbox only allows additionalPodMetadata labels from allowlisted domains (default sandbox.users.io).
+# srvm labels claimed pods with srvm.io/sandbox-id + srvm.io/tenant (per-sandbox NetworkPolicy, attribution).
+# Read once at controller startup: restart the controller after changing it.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: agent-sandbox-config, namespace: agent-sandbox-system }
+data:
+  allowed-label-domains: |
+    srvm.io
+    sandbox.users.io

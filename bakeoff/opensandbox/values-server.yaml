@@ -1,0 +1,30 @@
+server:
+  image: { repository: docker.io/opensandbox/server, tag: release-1.2.0 }
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+  env:
+    - name: OPENSANDBOX_SERVER_API_KEY
+      valueFrom: { secretKeyRef: { name: opensandbox-api-key, key: api-key } }
+configToml: |
+  [server]
+  host = "0.0.0.0"
+  port = 80
+  [log]
+  level = "INFO"
+  [runtime]
+  type = "kubernetes"
+  execd_image = "docker.io/opensandbox/execd:release-1.2.0"
+  [kubernetes]
+  namespace = "opensandbox"
+  workload_provider = "batchsandbox"
+  batchsandbox_template_file = "/etc/opensandbox/example.batchsandbox-template.yaml"
+  [egress]
+  image = "docker.io/opensandbox/egress:release-1.2.0"
+  mode = "dns+nft"
+  [secure_runtime]
+  type = "gvisor"
+  k8s_runtime_class = "gvisor"
+  [store]
+  type = "sqlite"
+  path = "/tmp/opensandbox.db"

@@ -1,0 +1,135 @@
+# OpenSandbox web console (upstream console/, built from source) pointed at srvm. Experimental.
+# Build the images and create the two Secrets first: see README.md in this directory. No secrets in this file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: srvm-console
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: srvm-console-nginx
+  namespace: srvm-console
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        location ~ ^/api/(admin/)?sandboxes/[^/]+/shell/ws$ {
+            proxy_pass http://console-bff.srvm-console.svc.cluster.local:8091;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+        location /api/ {
+            proxy_pass http://console-bff.srvm-console.svc.cluster.local:8091/api/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+        }
+        location /health {
+            proxy_pass http://console-bff.srvm-console.svc.cluster.local:8091/health;
+        }
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console-bff
+  namespace: srvm-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: console-bff}
+  template:
+    metadata:
+      labels: {app: console-bff}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: bff
+          image: srvm-console-bff:dev
+          imagePullPolicy: Never
+          ports: [{containerPort: 8091}]
+          env:
+            - {name: TZ, value: UTC}
+            - {name: LIFECYCLE_API_BASE, value: "http://srvm.srvm-system.svc.cluster.local/v1"}
+            - {name: BFF_SHELL_ENDPOINT_MODE, value: server}
+            - {name: TENANTS_TOML_PATH, value: /etc/opensandbox/tenants.toml}
+            - {name: BFF_COOKIE_SECURE, value: "false"}
+            - {name: BFF_CORS_ORIGINS, value: "http://localhost:18090"}
+            - {name: BFF_K8S_PROBE_ENABLED, value: "false"}
+          envFrom:
+            - secretRef: {name: srvm-console-bff}
+          volumeMounts:
+            - {name: tenants, mountPath: /etc/opensandbox, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /health, port: 8091}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 20m, memory: 96Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: tenants
+          secret: {secretName: srvm-console-tenants}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console-bff
+  namespace: srvm-console
+spec:
+  selector: {app: console-bff}
+  ports: [{port: 8091, targetPort: 8091}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console-web
+  namespace: srvm-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: console-web}
+  template:
+    metadata:
+      labels: {app: console-web}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: web
+          image: srvm-console-web:dev
+          imagePullPolicy: Never
+          securityContext: {runAsNonRoot: true, runAsUser: 101, allowPrivilegeEscalation: false}
+          ports: [{containerPort: 8080}]
+          volumeMounts:
+            - {name: nginx, mountPath: /etc/nginx/conf.d}
+          readinessProbe:
+            httpGet: {path: /, port: 8080}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: nginx
+          configMap: {name: srvm-console-nginx}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console-web
+  namespace: srvm-console
+spec:
+  selector: {app: console-web}
+  ports: [{port: 80, targetPort: 8080}]
+# Usage:
+#   kubectl apply -f deploy/kind/console/console.yaml
+#   kubectl -n srvm-console port-forward svc/console-web 18090:80   -> http://localhost:18090/login

@@ -1,0 +1,74 @@
+# srvm on kind: server in srvm-system, sandboxes in srvm-sandboxes (gVisor RuntimeClass "gvisor").
+apiVersion: v1
+kind: Namespace
+metadata: { name: srvm-sandboxes, labels: { srvm.io/role: sandboxes } }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: srvm, namespace: srvm-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: srvm, namespace: srvm-sandboxes }
+rules:
+- apiGroups: [extensions.agents.x-k8s.io]
+  resources: [sandboxtemplates, sandboxwarmpools, sandboxclaims]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [agents.x-k8s.io]
+  resources: [sandboxes]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch, patch]   # patch: safe-to-evict + bound-restarts annotations on claimed pods
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: srvm, namespace: srvm-sandboxes }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: srvm }
+subjects: [{ kind: ServiceAccount, name: srvm, namespace: srvm-system }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: srvm, namespace: srvm-system, labels: { app: srvm } }
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: srvm is single-replica until the durable work queue lands (roadmap #1). Startup
+  # recovery assumes no other srvm process is mid-operation, so old and new pods must never overlap.
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: srvm } }
+  template:
+    metadata: { labels: { app: srvm } }
+    spec:
+      serviceAccountName: srvm
+      nodeSelector: { srvm.io/pool: system }
+      containers:
+      - name: srvm
+        image: srvm:dev
+        imagePullPolicy: IfNotPresent
+        args: [serve]
+        ports: [{ name: http, containerPort: 8080 }]
+        envFrom: [{ secretRef: { name: srvm } }]   # ADMIN_TOKEN, S3_ACCESS_KEY, S3_SECRET_KEY (deploy/kind/secrets.sh)
+        env:
+        - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: srvm-postgres, key: DATABASE_URL } } }
+        - { name: SANDBOX_NAMESPACE, value: srvm-sandboxes }
+        - { name: SYSTEM_NAMESPACE, value: srvm-system }
+        - { name: RUNTIME_CLASS, value: gvisor }
+        - { name: HELPER_IMAGE, value: "srvm:dev" }
+        - { name: POOL_SIZE, value: "1" }
+        - { name: SANDBOX_CPU, value: "1" }
+        - { name: SANDBOX_MEMORY, value: 1Gi }   # 2Gi for the 2 GB workspace test; kind node is ~8 GB
+        - { name: S3_ENDPOINT, value: s3.srvm-system.svc.cluster.local:8080 }
+        - { name: S3_BUCKET, value: srvm-snapshots }
+        - { name: DEFAULT_EGRESS, value: deny }
+        readinessProbe: { httpGet: { path: /health, port: 8080 }, periodSeconds: 2 }
+        resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: srvm, namespace: srvm-system }
+spec:
+  selector: { app: srvm }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]

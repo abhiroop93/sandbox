@@ -1,0 +1,36 @@
+{
+  "test": "ramp",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:59:27",
+  "pool": "locked",
+  "hold_s": 10,
+  "duration_s": 90,
+  "steps": [
+    {
+      "rate_per_s": 2,
+      "issued": 179,
+      "claim_ready_s": {
+        "n": 172,
+        "p50": 3.338,
+        "p90": 92.538,
+        "p99": 114.646,
+        "max": 115.141,
+        "mean": 21.002
+      },
+      "failures": 7,
+      "frac_ready_under_2s": 0.151,
+      "pool_ready_min": 0,
+      "api_probe_s": {
+        "n": 155,
+        "p50": 0.005,
+        "p90": 0.01,
+        "p99": 0.013,
+        "max": 0.018,
+        "mean": 0.006
+      }
+    }
+  ],
+  "max_healthy_rate_per_s": 0,
+  "healthy_def": "claim p99 < 5.0s, 0 failures, API probe p99 < 1s"
+}

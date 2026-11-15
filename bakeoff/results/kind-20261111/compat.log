@@ -1,0 +1,213 @@
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+{
+  "test": "compat",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:30:26",
+  "rows": [
+    {
+      "step": "pip_install",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 21.13,
+      "runc_s": 17.72,
+      "slowdown_x": 1.19
+    },
+    {
+      "step": "numpy_matmul",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.97,
+      "runc_s": 3.61,
+      "slowdown_x": 0.27
+    },
+    {
+      "step": "pandas_groupby",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.51,
+      "runc_s": 0.38,
+      "slowdown_x": 1.34
+    },
+    {
+      "step": "sklearn_fit",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.43,
+      "runc_s": 3.1,
+      "slowdown_x": 1.11
+    },
+    {
+      "step": "git_clone",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 2.51,
+      "runc_s": 1.57,
+      "slowdown_x": 1.6
+    },
+    {
+      "step": "git_ops",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.08,
+      "runc_s": 0.02,
+      "slowdown_x": 4.0
+    },
+    {
+      "step": "npm_install",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.31,
+      "runc_s": 2.67,
+      "slowdown_x": 1.24
+    },
+    {
+      "step": "pytest_200",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.49,
+      "runc_s": 0.26,
+      "slowdown_x": 1.88
+    },
+    {
+      "step": "sqlite_200k",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 0.2,
+      "runc_s": 0.13,
+      "slowdown_x": 1.54
+    },
+    {
+      "step": "small_files_20k",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 1.98,
+      "runc_s": 0.47,
+      "slowdown_x": 4.21
+    },
+    {
+      "step": "big_file_1g",
+      "gvisor_ok": true,
+      "runc_ok": true,
+      "gvisor_s": 3.19,
+      "runc_s": 1.84,
+      "slowdown_x": 1.73
+    }
+  ],
+  "raw": {
+    "open": [
+      {
+        "step": "pip_install",
+        "ok": true,
+        "secs": 21.13
+      },
+      {
+        "step": "numpy_matmul",
+        "ok": true,
+        "secs": 0.97
+      },
+      {
+        "step": "pandas_groupby",
+        "ok": true,
+        "secs": 0.51
+      },
+      {
+        "step": "sklearn_fit",
+        "ok": true,
+        "secs": 3.43
+      },
+      {
+        "step": "git_clone",
+        "ok": true,
+        "secs": 2.51
+      },
+      {
+        "step": "git_ops",
+        "ok": true,
+        "secs": 0.08
+      },
+      {
+        "step": "npm_install",
+        "ok": true,
+        "secs": 3.31
+      },
+      {
+        "step": "pytest_200",
+        "ok": true,
+        "secs": 0.49
+      },
+      {
+        "step": "sqlite_200k",
+        "ok": true,
+        "secs": 0.2
+      },
+      {
+        "step": "small_files_20k",
+        "ok": true,
+        "secs": 1.98
+      },
+      {
+        "step": "big_file_1g",
+        "ok": true,
+        "secs": 3.19
+      }
+    ],
+    "runc": [
+      {
+        "step": "pip_install",
+        "ok": true,
+        "secs": 17.72
+      },
+      {
+        "step": "numpy_matmul",
+        "ok": true,
+        "secs": 3.61
+      },
+      {
+        "step": "pandas_groupby",
+        "ok": true,
+        "secs": 0.38
+      },
+      {
+        "step": "sklearn_fit",
+        "ok": true,
+        "secs": 3.1
+      },
+      {
+        "step": "git_clone",
+        "ok": true,
+        "secs": 1.57
+      },
+      {
+        "step": "git_ops",
+        "ok": true,
+        "secs": 0.02
+      },
+      {
+        "step": "npm_install",
+        "ok": true,
+        "secs": 2.67
+      },
+      {
+        "step": "pytest_200",
+        "ok": true,
+        "secs": 0.26
+      },
+      {
+        "step": "sqlite_200k",
+        "ok": true,
+        "secs": 0.13
+      },
+      {
+        "step": "small_files_20k",
+        "ok": true,
+        "secs": 0.47
+      },
+      {
+        "step": "big_file_1g",
+        "ok": true,
+        "secs": 1.84
+      }
+    ]
+  }
+}

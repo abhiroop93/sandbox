@@ -1,0 +1,155 @@
+run=kind-20261111 target=kind ns=srvm-bakeoff → bakeoff/results/kind-20261111
+{"size_mb": 100, "gen": {"op": "gen", "secs": 1.965, "detail": {"files_small": 1823, "files_medium": 27, "files_large": 2, "bytes": 104857600}}, "snapshot": {"op": "snapshot", "pack_secs": 0.415, "upload_secs": 0.844, "total_secs": 1.26, "compressed_bytes": 70739235, "chunks": 2}, "resume_claim_s": 0.048, "hydrate": {"op": "hydrate", "download_secs": 0.233, "unpack_secs": 0.509, "total_secs": 0.742}, "resume_end_to_end_s": 1.16, "intact": true, "digest": {"files": 1852, "bytes": 106159586, "listing_sha": "9feb07f67dc9268c"}}
+{"size_mb": 500, "gen": {"op": "gen", "secs": 8.826, "detail": {"files_small": 9017, "files_medium": 117, "files_large": 8, "bytes": 524288000}}, "snapshot": {"op": "snapshot", "pack_secs": 1.834, "upload_secs": 1.71, "total_secs": 3.544, "compressed_bytes": 352683582, "chunks": 6}, "resume_claim_s": 0.029, "hydrate": {"op": "hydrate", "download_secs": 0.385, "unpack_secs": 1.533, "total_secs": 1.918}, "resume_end_to_end_s": 2.43, "intact": true, "digest": {"files": 9142, "bytes": 525326522, "listing_sha": "26dc7298dd551c90"}}
+{"size_mb": 1024, "gen": {"op": "gen", "secs": 17.737, "detail": {"files_small": 18432, "files_medium": 260, "files_large": 18, "bytes": 1073741824}}, "snapshot": {"op": "snapshot", "pack_secs": 3.886, "upload_secs": 2.556, "total_secs": 6.442, "compressed_bytes": 721974186, "chunks": 11}, "resume_claim_s": 0.04, "hydrate": {"op": "hydrate", "download_secs": 1.079, "unpack_secs": 3.771, "total_secs": 4.85}, "resume_end_to_end_s": 5.5, "intact": true, "digest": {"files": 18710, "bytes": 1074093209, "listing_sha": "262b14dfbbdc60c1"}}
+{"size_mb": 2048, "gen": {"op": "gen", "secs": 38.024, "detail": {"files_small": 36866, "files_medium": 497, "files_large": 32, "bytes": 2147483648}}, "snapshot": {"op": "snapshot", "pack_secs": 10.576, "upload_secs": 6.988, "total_secs": 17.564, "compressed_bytes": 1443963890, "chunks": 22}, "resume_claim_s": 0.085, "hydrate": {"op": "hydrate", "download_secs": 1.466, "unpack_secs": 7.025, "total_secs": 8.492}, "resume_end_to_end_s": 8.97, "intact": true, "digest": {"files": 37395, "bytes": 2148290000.0, "listing_sha": "48cfa70f51872d2f"}}
+{
+  "test": "resume",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:20:00",
+  "pool": "ws",
+  "results": [
+    {
+      "size_mb": 100,
+      "gen": {
+        "op": "gen",
+        "secs": 1.965,
+        "detail": {
+          "files_small": 1823,
+          "files_medium": 27,
+          "files_large": 2,
+          "bytes": 104857600
+        }
+      },
+      "snapshot": {
+        "op": "snapshot",
+        "pack_secs": 0.415,
+        "upload_secs": 0.844,
+        "total_secs": 1.26,
+        "compressed_bytes": 70739235,
+        "chunks": 2
+      },
+      "resume_claim_s": 0.048,
+      "hydrate": {
+        "op": "hydrate",
+        "download_secs": 0.233,
+        "unpack_secs": 0.509,
+        "total_secs": 0.742
+      },
+      "resume_end_to_end_s": 1.16,
+      "intact": true,
+      "digest": {
+        "files": 1852,
+        "bytes": 106159586,
+        "listing_sha": "9feb07f67dc9268c"
+      }
+    },
+    {
+      "size_mb": 500,
+      "gen": {
+        "op": "gen",
+        "secs": 8.826,
+        "detail": {
+          "files_small": 9017,
+          "files_medium": 117,
+          "files_large": 8,
+          "bytes": 524288000
+        }
+      },
+      "snapshot": {
+        "op": "snapshot",
+        "pack_secs": 1.834,
+        "upload_secs": 1.71,
+        "total_secs": 3.544,
+        "compressed_bytes": 352683582,
+        "chunks": 6
+      },
+      "resume_claim_s": 0.029,
+      "hydrate": {
+        "op": "hydrate",
+        "download_secs": 0.385,
+        "unpack_secs": 1.533,
+        "total_secs": 1.918
+      },
+      "resume_end_to_end_s": 2.43,
+      "intact": true,
+      "digest": {
+        "files": 9142,
+        "bytes": 525326522,
+        "listing_sha": "26dc7298dd551c90"
+      }
+    },
+    {
+      "size_mb": 1024,
+      "gen": {
+        "op": "gen",
+        "secs": 17.737,
+        "detail": {
+          "files_small": 18432,
+          "files_medium": 260,
+          "files_large": 18,
+          "bytes": 1073741824
+        }
+      },
+      "snapshot": {
+        "op": "snapshot",
+        "pack_secs": 3.886,
+        "upload_secs": 2.556,
+        "total_secs": 6.442,
+        "compressed_bytes": 721974186,
+        "chunks": 11
+      },
+      "resume_claim_s": 0.04,
+      "hydrate": {
+        "op": "hydrate",
+        "download_secs": 1.079,
+        "unpack_secs": 3.771,
+        "total_secs": 4.85
+      },
+      "resume_end_to_end_s": 5.5,
+      "intact": true,
+      "digest": {
+        "files": 18710,
+        "bytes": 1074093209,
+        "listing_sha": "262b14dfbbdc60c1"
+      }
+    },
+    {
+      "size_mb": 2048,
+      "gen": {
+        "op": "gen",
+        "secs": 38.024,
+        "detail": {
+          "files_small": 36866,
+          "files_medium": 497,
+          "files_large": 32,
+          "bytes": 2147483648
+        }
+      },
+      "snapshot": {
+        "op": "snapshot",
+        "pack_secs": 10.576,
+        "upload_secs": 6.988,
+        "total_secs": 17.564,
+        "compressed_bytes": 1443963890,
+        "chunks": 22
+      },
+      "resume_claim_s": 0.085,
+      "hydrate": {
+        "op": "hydrate",
+        "download_secs": 1.466,
+        "unpack_secs": 7.025,
+        "total_secs": 8.492
+      },
+      "resume_end_to_end_s": 8.97,
+      "intact": true,
+      "digest": {
+        "files": 37395,
+        "bytes": 2148290000.0,
+        "listing_sha": "48cfa70f51872d2f"
+      }
+    }
+  ],
+  "note": "prototype: tar+zstd+64MB chunks, s5cmd 32 workers. Production = content-addressed incremental chunks"
+}

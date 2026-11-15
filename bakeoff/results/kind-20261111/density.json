@@ -1,0 +1,37 @@
+{
+  "test": "density",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:02:31",
+  "sandbox_nodes": 1,
+  "max_ready": 10,
+  "per_node": 10.0,
+  "pending_at_stop": 2,
+  "steps": [
+    {
+      "replicas": 10,
+      "ready_s": 2.0
+    },
+    {
+      "replicas": 20,
+      "ready": 18,
+      "timeout": true
+    }
+  ],
+  "nodes": [
+    {
+      "node": "srvm-bakeoff-worker2",
+      "allocatable": {
+        "cpu": "11",
+        "ephemeral-storage": "61202244Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "hugepages-32Mi": "0",
+        "hugepages-64Ki": "0",
+        "memory": "8025220Ki",
+        "pods": "110"
+      }
+    }
+  ],
+  "note": "tiny = 100m/128Mi. Limits hit: CPU/mem requests, maxPods (110), or runsc overhead"
+}
