@@ -104,7 +104,7 @@ ours. → D4
 
 **Why gVisor and not Firecracker?** gVisor runs on any Kubernetes node; Firecracker needs KVM (bare metal or
 nested virtualization). Once scale or speed matters, we move to Firecracker via a host agent; Kata is the earlier
-step if only a VM boundary is needed. → D5, roadmap §2
+step if only a VM boundary is needed. → D5, roadmap §2, [firecracker.md](firecracker.md)
 
 **What happens to a sandbox if its pod dies?** Drains and evictions: the workspace is saved during shutdown. Crashes:
 it falls back to the last snapshot. Running processes never survive. → D7

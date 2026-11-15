@@ -19,7 +19,7 @@ SDKs** (Python, TypeScript, Go, Java, C#) work against it.
 > single replica, and the kind setup uses throwaway storage. See [the roadmap](docs/roadmap.md) for what's missing.
 
 ## Try it locally (about 15 minutes)
-Needs Docker (8 GB+ memory; 12 GB recommended), [kind](https://kind.sigs.k8s.io), kubectl, helm, Go 1.25+, Python 3 and [uv](https://docs.astral.sh/uv/).
+Needs Docker (8 GB+ memory; 12 GB recommended), [kind](https://kind.sigs.k8s.io), kubectl, Go 1.26+, Python 3 and [uv](https://docs.astral.sh/uv/).
 ```bash
 cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && cd ..   # kind + gVisor + agent-sandbox + S3
 kubectl apply -f deploy/kind/runtimeclass.yaml -f deploy/kind/agent-sandbox-config.yaml
@@ -27,14 +27,21 @@ kubectl -n agent-sandbox-system rollout restart deploy/agent-sandbox-controller
 make deploy                                               # build, generate secrets, deploy Postgres + srvm
 kubectl -n srvm-system port-forward svc/srvm 18081:80 &
 
-# mint an API key (shown once)
-kubectl -n srvm-system exec deploy/srvm -- /srvm admin create-tenant demo-team 20
-kubectl -n srvm-system exec deploy/srvm -- /srvm admin create-key demo-team
+# SRVM_DOMAIN: where srvm is reachable (host:port, no scheme): here, the port-forward above
+export SRVM_DOMAIN=127.0.0.1:18081
 
-export SRVM_DOMAIN=127.0.0.1:18081 SRVM_API_KEY=srvm_...
+# SRVM_API_KEY: create a tenant (20 = max running sandboxes), then mint a key for it.
+# create-key prints {"keyId", "apiKey", ...}; the apiKey is shown only once, so this captures it directly.
+kubectl -n srvm-system exec deploy/srvm -- /srvm admin create-tenant demo-team 20
+export SRVM_API_KEY=$(kubectl -n srvm-system exec deploy/srvm -- /srvm admin create-key demo-team \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["apiKey"])')
+
 cd quickstart && uv venv && uv pip install -r requirements.txt
 .venv/bin/python demo.py
 ```
+Lost the key? It can't be recovered (only a hash is stored): mint another with `create-key`. More on tenants and
+keys: [docs/operations.md §4](docs/operations.md#4-operating-tenants-keys-usage).
+
 The demo walks through four acts: untrusted code trying to escape (all blocked), installing a package and running
 real work, pause/resume with files intact, and surviving a pod eviction. Details: [quickstart/README.md](quickstart/README.md).
 
@@ -58,6 +65,7 @@ Which OpenSandbox endpoints are supported: [docs/api-coverage.md](docs/api-cover
 | [docs/operations.md](docs/operations.md) | Setup, configuration, tenants and API keys, troubleshooting |
 | [docs/validation.md](docs/validation.md) | Every test and measurement, with results (raw data in `bakeoff/results/`) |
 | [docs/roadmap.md](docs/roadmap.md) | What's next, including when to move from gVisor to Firecracker |
+| [docs/firecracker.md](docs/firecracker.md) | What a Firecracker runtime would change (design note) |
 | [docs/api-coverage.md](docs/api-coverage.md) | Which OpenSandbox endpoints and fields srvm supports |
 
 ## Repository layout

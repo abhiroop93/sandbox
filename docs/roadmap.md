@@ -29,6 +29,7 @@ Firecracker microVMs run by a host agent on each node** (E2B/Modal style, D10 ti
 
 Cost: KVM-capable nodes (bare metal or nested virtualization), and a substantial build (scheduling, networking,
 image distribution, node-failure handling). The API and lifecycle are unaffected: it replaces `internal/cell`.
+What it would take, step by step: [firecracker.md](firecracker.md).
 
 **Kata Containers is the smaller, earlier step for isolation only.** Kata runs each pod inside a lightweight VM
 (Firecracker or Cloud Hypervisor) behind a RuntimeClass, so it slots into today's architecture unchanged: a second

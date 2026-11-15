@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")"; source env.sh
 
 log "installing agent-sandbox $AGENT_SANDBOX_VERSION"
+# kind: preload the controller image from the host (in-node pulls from registry.k8s.io can hang).
+./preload-images.sh "registry.k8s.io/agent-sandbox/agent-sandbox-controller:$AGENT_SANDBOX_VERSION"
 kubectl apply --server-side -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
 # First install pulls the controller image onto fresh nodes: allow for a slow network.
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=600s || {

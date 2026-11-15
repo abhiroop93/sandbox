@@ -16,6 +16,7 @@ env.sh              all parameters (override via env)
 00-cluster-gke.sh   GKE: dedicated cluster + GKE Sandbox (gVisor) node pool
 01-install.sh       agent-sandbox, namespaces, sandbox image (kind), in-cluster S3 (kind), python venv
 02-templates.sh     RuntimeClass, SandboxTemplates + WarmPools, NetworkPolicies
+preload-images.sh   kind: pull images on the host and import them into the nodes (used by 01-install.sh)
 bench.py            latency | cold | burst | ramp | density | resume | compat | escape | report
 image/              sandbox image: python 3.12, node, git, zstd, s5cmd + in-sandbox scripts (snap/escape/compat)
 results/<run>/      JSON per test + summary.md

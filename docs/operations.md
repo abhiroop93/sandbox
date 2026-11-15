@@ -16,7 +16,7 @@ Two audiences:
 | **srvm** (Deployment + Service) | `srvm-system` | One stateless binary. Sandboxes run in `srvm-sandboxes`. |
 
 ## 2. Local setup (kind): about 15 minutes
-Prereqs: Docker Desktop (≥ 8 GB; 12+ GB recommended), kind, kubectl, helm, Go ≥ 1.25, Python 3 + `uv`.
+Prereqs: Docker Desktop (≥ 8 GB; 12+ GB recommended), kind, kubectl, Go ≥ 1.26, Python 3 + `uv` (helm only for the OpenSandbox comparison in `bakeoff/opensandbox/`).
 ```bash
 cd bakeoff && ./00-cluster-kind.sh && ./01-install.sh && cd ..
 #   kind cluster + gVisor on a tainted sandbox node, agent-sandbox, in-cluster S3 (rclone)
@@ -109,7 +109,8 @@ curl -XDELETE -H "X-SRVM-ADMIN-TOKEN: $T" localhost:18081/admin/v1/keys/key_1a2b
 ---
 
 ## 6. Users: getting started
-You need **an API key** (ask the platform team) and the srvm address.
+You need two values from the platform team: **`SRVM_DOMAIN`**, the srvm address as `host:port` with no scheme, and
+**`SRVM_API_KEY`**, a key they mint for your tenant (§4). The key is shown to them once; if it's lost, ask for a new one.
 ```bash
 pip install opensandbox==1.2.0          # the official OpenSandbox SDK; nothing srvm-specific to install
 export SRVM_DOMAIN=srvm.internal.example.com SRVM_API_KEY=srvm_…

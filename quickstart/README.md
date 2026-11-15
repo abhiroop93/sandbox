@@ -1,21 +1,41 @@
 # srvm quickstart
 
-Two tiny programs, Python and Go, that create a sandbox, run a few commands, write and read files, then delete it.
-They use the **official OpenSandbox SDKs, unmodified**; srvm speaks the OpenSandbox API.
+Small programs that use the **official OpenSandbox SDKs, unmodified** (srvm speaks the OpenSandbox API):
 
-## 1. Point at srvm and get an API key
+| File | What it does |
+|---|---|
+| `quickstart.py`, `go/main.go` | Create a sandbox, run commands, write and read files, delete it |
+| `demo.py` | A ~3-minute demo: isolation, real work, pause/resume, surviving an eviction (§3) |
+| `pause.py`, `resume.py` | Pause a sandbox in one run, resume it in another |
+
+## 1. Set `SRVM_DOMAIN` and `SRVM_API_KEY`
+Every program reads two environment variables:
+
+| Variable | What it is | Where it comes from |
+|---|---|---|
+| `SRVM_DOMAIN` | The address of the srvm server: `host:port`, no `http://` | Local kind cluster: your port-forward, `127.0.0.1:18081`. Shared deployment: the srvm hostname your platform team gives you. |
+| `SRVM_API_KEY` | Your tenant's API key, `srvm_<id>_<secret>` | Minted by whoever operates srvm, with `srvm admin create-key <tenant>`. On your own kind cluster, that's you (below). Shown only once; it can't be recovered, only replaced. |
+
+**Using a shared srvm:** ask the platform team for both values, then:
 ```bash
-# local kind cluster: expose srvm on localhost
-kubectl -n srvm-system port-forward svc/srvm 18081:80 &
+export SRVM_DOMAIN=<srvm host>  SRVM_API_KEY=<your key>
+```
 
-# operator: mint a key (tenant must exist; see docs/operations.md §4)
+**Running srvm yourself on kind** (after the setup in the [main README](../README.md#try-it-locally-about-15-minutes)):
+```bash
+# SRVM_DOMAIN: expose srvm on localhost. Keep this running; re-run it after a redeploy or Docker restart.
+kubectl -n srvm-system port-forward svc/srvm 18081:80 &
+export SRVM_DOMAIN=127.0.0.1:18081
+
+# SRVM_API_KEY: you are the operator. Create a tenant (20 = max running sandboxes), mint a key for it,
+# and capture the "apiKey" field from the JSON that create-key prints.
 srvm-admin() { kubectl -n srvm-system exec deploy/srvm -- /srvm admin "$@"; }
 srvm-admin create-tenant demo-team 20
-srvm-admin create-key demo-team          # copy "apiKey" from the output: it's shown once
-
-export SRVM_DOMAIN=127.0.0.1:18081       # host:port, no scheme
-export SRVM_API_KEY=srvm_...
+export SRVM_API_KEY=$(srvm-admin create-key demo-team | python3 -c 'import json,sys; print(json.load(sys.stdin)["apiKey"])')
 ```
+Both variables live only in the current shell: export them again in a new terminal (mint a new key if you didn't
+save the old one, and revoke the old one with `srvm-admin revoke-key <keyId>`; `srvm-admin list-keys` shows ids).
+More on tenants and keys: [docs/operations.md §4](../docs/operations.md#4-operating-tenants-keys-usage).
 
 ## 2a. Python
 ```bash
