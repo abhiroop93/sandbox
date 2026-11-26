@@ -1,0 +1,28 @@
+# Postgres for the server on kind (single pod, emptyDir: data survives a container restart but not pod recreation).
+# Credentials: the sandbox-postgres Secret is created with a random password by deploy/kind/secrets.sh (make deploy).
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: postgres, namespace: sandbox-system, labels: { app: postgres } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      nodeSelector: { sandbox.io/pool: system }
+      containers:
+      - name: postgres
+        image: postgres:16.4
+        envFrom: [{ secretRef: { name: sandbox-postgres } }]
+        ports: [{ containerPort: 5432 }]
+        resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
+        readinessProbe: { exec: { command: ["pg_isready", "-U", "sandbox"] }, periodSeconds: 3 }
+        volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: sandbox-system }
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]

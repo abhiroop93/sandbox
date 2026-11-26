@@ -1,0 +1,24 @@
+{
+  "test": "osb_cold",
+  "system": "opensandbox release-1.2.0 (batchsandbox, gvisor)",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:23:49",
+  "create_to_ready_s": {
+    "n": 10,
+    "p50": 1.892,
+    "p90": 2.772,
+    "p99": 2.786,
+    "max": 2.786,
+    "mean": 2.214
+  },
+  "first_exec_s": {
+    "n": 10,
+    "p50": 0.223,
+    "p90": 0.233,
+    "p99": 0.255,
+    "max": 0.255,
+    "mean": 0.226
+  },
+  "failures": 0,
+  "note": "non-pool create via SDK (server proxy), image pre-loaded on node"
+}

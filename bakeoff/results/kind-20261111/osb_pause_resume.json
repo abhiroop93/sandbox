@@ -1,0 +1,72 @@
+{
+  "test": "osb_pause_resume",
+  "system": "opensandbox release-1.2.0 (batchsandbox, gvisor)",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:30:43",
+  "results": [
+    {
+      "size_mb": 100,
+      "create_s": 1.81,
+      "gen": {
+        "op": "gen",
+        "secs": 1.984,
+        "detail": {
+          "files_small": 1823,
+          "files_medium": 27,
+          "files_large": 2,
+          "bytes": 104857600
+        }
+      },
+      "pause_call_s": 0.04,
+      "pause_total_s": 11.79,
+      "pause_states": [
+        "Pausing",
+        "Paused"
+      ],
+      "error": "SandboxReadyTimeoutException('Sandbox health check timed out after 30.0s (1 attempts). Health check has not succeeded. ConnectionConfig(domain=127.0.0.1:18080, use_server_proxy=True).')"
+    },
+    {
+      "size_mb": 1024,
+      "create_s": 2.8,
+      "gen": {
+        "op": "gen",
+        "secs": 17.288,
+        "detail": {
+          "files_small": 18432,
+          "files_medium": 260,
+          "files_large": 18,
+          "bytes": 1073741824
+        }
+      },
+      "pause_call_s": 0.2,
+      "pause_total_s": 34.31,
+      "pause_states": [
+        "Pausing",
+        "Paused"
+      ],
+      "error": "SandboxReadyTimeoutException('Sandbox health check timed out after 30.0s (1 attempts). Health check has not succeeded. ConnectionConfig(domain=127.0.0.1:18080, use_server_proxy=True).')"
+    },
+    {
+      "size_mb": 2048,
+      "create_s": 1.95,
+      "gen": {
+        "op": "gen",
+        "secs": 36.087,
+        "detail": {
+          "files_small": 36866,
+          "files_medium": 497,
+          "files_large": 32,
+          "bytes": 2147483648
+        }
+      },
+      "pause_call_s": 0.03,
+      "pause_total_s": 63.76,
+      "pause_states": [
+        "Pausing",
+        "Paused"
+      ],
+      "error": "SandboxReadyTimeoutException('Sandbox health check timed out after 30.0s (1 attempts). Health check has not succeeded. ConnectionConfig(domain=127.0.0.1:18080, use_server_proxy=True).')"
+    }
+  ],
+  "note": "OpenSandbox pause = commit sandbox rootfs to OCI image (registry kind-registry:5000); resume = recreate pod from that image. Workspace written to /workspace in rootfs."
+}

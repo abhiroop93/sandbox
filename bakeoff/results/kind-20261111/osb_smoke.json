@@ -1,0 +1,10 @@
+{
+  "test": "osb_smoke",
+  "system": "opensandbox release-1.2.0 (batchsandbox, gvisor)",
+  "run": "kind-20261111",
+  "at": "2026-11-11T16:23:14",
+  "create_s": 19.191,
+  "stdout": "uid=1000(sandbox) gid=1000(sandbox) groups=1000(sandbox)\nLinux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016\n[    0.000000] Starting gVisor...\n[    0.419450] Adversarially training Redcode AI...\nPATH=/opt/sandbox:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
+  "stderr": "",
+  "id": "d70d675c-fffd-4606-92b8-a36200eb2dad"
+}

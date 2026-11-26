@@ -1,0 +1,17 @@
+# build output
+/bin/
+
+# Python environments and caches
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local state and generated credentials (never commit)
+bakeoff/.local-secrets
+bakeoff/.last_run
+*.local.toml
+
+# superseded design notes (kept locally; key decisions live in docs/architecture.md)
+docs/archive/

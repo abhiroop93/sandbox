@@ -1,0 +1,85 @@
+{
+  "test": "escape",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:06:01",
+  "all_pass": true,
+  "checks": [
+    {
+      "check": "gvisor_runtime",
+      "pass": true,
+      "detail": "Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016"
+    },
+    {
+      "check": "non_root",
+      "pass": true,
+      "detail": "uid=1000"
+    },
+    {
+      "check": "no_sa_token",
+      "pass": true,
+      "detail": "absent"
+    },
+    {
+      "check": "host_procs_hidden",
+      "pass": true,
+      "detail": "pids=5"
+    },
+    {
+      "check": "no_mount",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "no_sysctl_write",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "no_raw_socket",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "metadata_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "metadata_dns_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "k8s_api_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "internet_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "peer_sandbox_blocked",
+      "pass": true,
+      "detail": "blocked"
+    },
+    {
+      "check": "dns_works",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "check": "object_store_reachable",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "check": "peer_server_listening_control",
+      "pass": true,
+      "detail": "peer http.server answers on localhost (proves peer_sandbox_blocked is real)"
+    }
+  ],
+  "note": "metadata checks are only meaningful on a cloud cluster"
+}

@@ -1,0 +1,10 @@
+# agent-sandbox only allows additionalPodMetadata labels from allowlisted domains (default sandbox.users.io).
+# The server labels claimed pods with sandbox.io/sandbox-id + sandbox.io/tenant (per-sandbox NetworkPolicy, attribution).
+# Read once at controller startup: restart the controller after changing it.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: agent-sandbox-config, namespace: agent-sandbox-system }
+data:
+  allowed-label-domains: |
+    sandbox.io
+    sandbox.users.io

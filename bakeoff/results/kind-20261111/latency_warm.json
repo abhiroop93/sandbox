@@ -1,0 +1,25 @@
+{
+  "test": "latency_warm",
+  "target": "kind",
+  "run": "kind-20261111",
+  "at": "2026-11-11T15:17:08",
+  "pool": "locked",
+  "claim_ready_s": {
+    "n": 30,
+    "p50": 0.016,
+    "p90": 0.027,
+    "p99": 0.065,
+    "max": 0.065,
+    "mean": 0.019
+  },
+  "first_exec_via_kubectl_s": {
+    "n": 10,
+    "p50": 0.104,
+    "p90": 0.131,
+    "p99": 0.177,
+    "max": 0.177,
+    "mean": 0.111
+  },
+  "failures": 0,
+  "note": "first_exec includes kubectl exec overhead; sandbox data path (gateway\u2192sandboxd) will be faster"
+}

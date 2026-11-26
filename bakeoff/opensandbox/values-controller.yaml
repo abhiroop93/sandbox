@@ -1,0 +1,6 @@
+controller:
+  image: { repository: docker.io/opensandbox/controller, tag: release-1.2.0 }
+  snapshot:
+    imageCommitterImage: docker.io/opensandbox/image-committer:release-1.2.0
+    registry: kind-registry:5000
+    registryInsecure: true
