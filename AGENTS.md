@@ -10,13 +10,14 @@ changing behaviour it covers.
 
 ## Layout
 - `cmd/sandbox`: server (`sandbox serve`) and operator CLI (`sandbox admin ...`); configured only by env vars (docs/operations.md §3).
-- `cmd/sandbox-snap`: static helper injected into every sandbox (pack/upload/hydrate snapshots, preStop guard).
+- `cmd/sandbox-snap`: static helper injected into every sandbox (quiesce/thaw, pack/upload/hydrate snapshots, preStop guard).
 - `internal/api`: HTTP routes, API-key auth, proxy to execd. Must stay compatible with the unmodified OpenSandbox SDKs.
-- `internal/lifecycle`: state machine (create/pause/resume/delete), expiry, reconciliation, pod-interruption handling.
+- `internal/lifecycle`: durable state machine and leased workers (create/pause/autosave/resume/delete), expiry,
+  bounded reconciliation and pod-interruption handling.
 - `internal/cell`: the **only** package that knows sandboxes are Kubernetes pods (templates, warm pools, claims,
   NetworkPolicy, pod watch). Keep Kubernetes types out of other packages.
-- `internal/store`: Postgres. `schema.sql` is embedded in the binary and applied idempotently at startup.
-- `deploy/kind`, `bakeoff/`: local cluster setup and benchmarks. `tests/e2e`: SDK contract and interruption tests.
+- `internal/store`: Postgres (state, CAS transitions and lifecycle jobs). `schema.sql` is embedded and applied idempotently.
+- `deploy/kind`, `bakeoff/`: local cluster setup and benchmarks. `tests/e2e`: SDK contract, local-server recovery and interruption tests.
 
 ## Build and test
 ```bash
@@ -29,8 +30,9 @@ make deploy                       # build image, kind load, apply (needs the kin
   `tests/e2e/interruption.py` **stops a cluster node**: never run it unless asked.
 
 ## Rules
-- **State changes go through `store.Transition`** (compare-and-set on the current state). Never write `state` directly;
-  never allow two pods for one sandbox (D6).
+- **State changes go through `store.Transition` / `TransitionWithJob`** (compare-and-set plus atomic job enqueue or fenced
+  completion). Never write `state` directly; reuses persisted generation/claim/token on retry; never allow two intended
+  pod generations for one sandbox (D6).
 - **The pod template is the security boundary.** Don't weaken gVisor, non-root, dropped capabilities, the missing
   service-account token or the baseline NetworkPolicy. `internal/cell/cell_test.go` locks these; extend it, don't relax it.
   When the pod template changes, bump `templateRev` in `cell.go`.

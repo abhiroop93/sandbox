@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -120,18 +121,39 @@ type createReq struct {
 	Image struct {
 		URI string `json:"uri"`
 	} `json:"image"`
-	Timeout    *int64                   `json:"timeout"`
-	Entrypoint []string                 `json:"entrypoint"`
-	Env        map[string]string        `json:"env"`
-	Metadata   map[string]string        `json:"metadata"`
-	Network    *lifecycle.NetworkPolicy `json:"networkPolicy"`
-	Volumes    []any                    `json:"volumes"`
-	SnapshotID *string                  `json:"snapshotId"`
+	Timeout          *int64                   `json:"timeout"`
+	Entrypoint       []string                 `json:"entrypoint"`
+	Env              map[string]string        `json:"env"`
+	Metadata         map[string]string        `json:"metadata"`
+	Network          *lifecycle.NetworkPolicy `json:"networkPolicy"`
+	ResourceLimits   map[string]string        `json:"resourceLimits"`
+	ResourceRequests map[string]string        `json:"resourceRequests"`
+	SecureAccess     *bool                    `json:"secureAccess"`
+	Extensions       map[string]string        `json:"extensions"`
+	Volumes          []any                    `json:"volumes"`
+	SnapshotID       *string                  `json:"snapshotId"`
+}
+
+func decodeCreateRequest(body io.Reader) (createReq, error) {
+	var req createReq
+	dec := json.NewDecoder(body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return req, err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return req, fmt.Errorf("request must contain exactly one JSON object")
+	}
+	return req, nil
+}
+
+func defaultEntrypoint(entrypoint []string) bool {
+	return len(entrypoint) == 0 || len(entrypoint) == 3 && entrypoint[0] == "tail" && entrypoint[1] == "-f" && entrypoint[2] == "/dev/null"
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	var req createReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := decodeCreateRequest(r.Body)
+	if err != nil {
 		writeErr(w, 400, "INVALID_REQUEST", "invalid JSON: "+err.Error())
 		return
 	}
@@ -143,7 +165,20 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "NOT_SUPPORTED", "volumes and snapshotId are not supported by this server yet; /workspace persists across pause/resume")
 		return
 	}
-	spec := lifecycle.CreateSpec{Image: req.Image.URI, Entrypoint: req.Entrypoint, Env: req.Env, Metadata: req.Metadata, Network: req.Network}
+	if !defaultEntrypoint(req.Entrypoint) {
+		writeErr(w, 400, "NOT_SUPPORTED", "custom entrypoint is not supported; use commands.run after create")
+		return
+	}
+	if req.SecureAccess != nil && *req.SecureAccess {
+		writeErr(w, 400, "NOT_SUPPORTED", "secureAccess is not supported by this server")
+		return
+	}
+	if len(req.Extensions) > 0 {
+		writeErr(w, 400, "NOT_SUPPORTED", "extensions are not supported by this server")
+		return
+	}
+	spec := lifecycle.CreateSpec{Image: req.Image.URI, Entrypoint: req.Entrypoint, Env: req.Env, Metadata: req.Metadata,
+		Network: req.Network, ResourceLimits: req.ResourceLimits, ResourceRequests: req.ResourceRequests}
 	if len(spec.Entrypoint) == 0 {
 		spec.Entrypoint = []string{"tail", "-f", "/dev/null"}
 	}

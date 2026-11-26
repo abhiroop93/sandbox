@@ -58,8 +58,10 @@ spec:
         - { name: RUNTIME_CLASS, value: gvisor }
         - { name: HELPER_IMAGE, value: "sandbox:dev" }
         - { name: POOL_SIZE, value: "1" }
+        - { name: JOB_WORKERS, value: "4" }
+        - { name: AUTOSAVE_INTERVAL_SECONDS, value: "300" }  # full, process-quiesced archive; 0 disables
         - { name: SANDBOX_CPU, value: "1" }
-        - { name: SANDBOX_MEMORY, value: 1Gi }   # 2Gi for the 2 GB workspace test; kind node is ~8 GB
+        - { name: SANDBOX_MEMORY, value: 2Gi }   # matches the OpenSandbox SDK default; pool_size=1 bounds kind memory
         - { name: S3_ENDPOINT, value: s3.sandbox-system.svc.cluster.local:8080 }
         - { name: S3_BUCKET, value: sandbox-snapshots }
         - { name: DEFAULT_EGRESS, value: deny }

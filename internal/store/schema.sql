@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS sandboxes (
     execd_token   TEXT,                           -- per-generation execd access token (server-side only)
     snapshot_key  TEXT,                           -- object-store prefix of latest workspace snapshot
     snapshot_bytes BIGINT,
+    snapshot_digest TEXT NOT NULL DEFAULT '',     -- digest of the committed archive
+    autosave_at   TIMESTAMPTZ,                    -- next requested autosave; null disables/schedules none
     expires_at    TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -44,8 +46,31 @@ CREATE TABLE IF NOT EXISTS usage_events (            -- append-only metering (D9
     id          BIGSERIAL PRIMARY KEY,
     sandbox_id  TEXT NOT NULL,
     tenant_id   TEXT NOT NULL,
-    event       TEXT NOT NULL,                    -- created|paused|resumed|terminated|expired|failed|lost|restarted
+    event       TEXT NOT NULL,                    -- created|paused|resumed|terminated|expired|failed|lost|restarted|autosaved
     generation  BIGINT NOT NULL,
     at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     detail      JSONB NOT NULL DEFAULT '{}'
 );
+
+-- One current desired lifecycle operation per sandbox. Revision fences a worker
+-- when pause/delete/eviction supersedes earlier work. Leases are in Postgres so
+-- progress survives process restarts without another service.
+CREATE TABLE IF NOT EXISTS lifecycle_jobs (
+    sandbox_id  TEXT PRIMARY KEY REFERENCES sandboxes(id) ON DELETE CASCADE,
+    revision    BIGINT NOT NULL,
+    kind        TEXT NOT NULL,                    -- start|pause|autosave|delete
+    generation  BIGINT NOT NULL,
+    payload     JSONB NOT NULL DEFAULT '{}',
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempts    INT NOT NULL DEFAULT 0,
+    owner       TEXT,
+    lease_until TIMESTAMPTZ,
+    last_error  TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS lifecycle_jobs_available ON lifecycle_jobs (available_at, lease_until);
+
+-- Idempotent upgrades for databases created before queue/autosave support.
+ALTER TABLE sandboxes ADD COLUMN IF NOT EXISTS snapshot_digest TEXT NOT NULL DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN IF NOT EXISTS autosave_at TIMESTAMPTZ;

@@ -2,7 +2,9 @@
 // It never holds storage credentials: the server hands it short-lived presigned URLs.
 //
 //	sandbox-snap install <dst>                      copy self to dst (init container)
-//	sandbox-snap pack <dir> <outdir>                tar|zstd → 64 MiB chunks in outdir; prints {"chunks":N,"bytes":B}
+//	sandbox-snap freeze <session>                   stop workload processes; preserve execd and record PID incarnations
+//	sandbox-snap thaw <session>                     resume recorded processes; idempotent and safe against PID reuse
+//	sandbox-snap pack <dir> <outdir>                tar|zstd → 64 MiB chunks; prints {"chunks":N,"bytes":B,"digest":...}
 //	sandbox-snap upload <outdir> <urls.b64>         PUT chunk i to url[i] in parallel, then remove outdir
 //	sandbox-snap hydrate <dir> <urls.b64>           GET chunks in parallel, stream-decode into dir (replaces contents)
 //	sandbox-snap guard arm|disarm <marker>          mark the pod as holding an unsaved workspace (or not)
@@ -13,7 +15,9 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +45,10 @@ func main() {
 	switch os.Args[1] {
 	case "install":
 		err = install(arg(2))
+	case "freeze":
+		err = freeze(arg(2))
+	case "thaw":
+		err = thaw(arg(2))
 	case "pack":
 		err = pack(arg(2), arg(3))
 	case "upload":
@@ -159,7 +167,8 @@ func pack(dir, out string) error {
 		return err
 	}
 	cw := &chunkWriter{dir: out}
-	zw, err := zstd.NewWriter(cw, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(4))
+	digest := sha256.New()
+	zw, err := zstd.NewWriter(io.MultiWriter(cw, digest), zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderConcurrency(4))
 	if err != nil {
 		return err
 	}
@@ -223,7 +232,8 @@ func pack(dir, out string) error {
 			return err
 		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]int64{"chunks": int64(cw.n), "bytes": cw.total})
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"chunks": cw.n, "bytes": cw.total,
+		"digest": hex.EncodeToString(digest.Sum(nil))})
 }
 
 func decodeURLs(b64 string) ([]string, error) {

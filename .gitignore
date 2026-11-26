@@ -15,3 +15,4 @@ bakeoff/.last_run
 
 # superseded design notes (kept locally; key decisions live in docs/architecture.md)
 docs/archive/
+.kimchi/

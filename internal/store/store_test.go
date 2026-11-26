@@ -153,3 +153,29 @@ func TestTenantIsolationOnGet(t *testing.T) {
 		t.Fatalf("tenant b list should be empty: %d %v", len(items), err)
 	}
 }
+
+func TestPerTenantImageCap(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	s.MaxImages = 2
+	tn := tenant(t, s, 10)
+	for _, tmpl := range []string{"img-a", "img-b", "img-a"} { // a repeated image is not a new image
+		sb := newSB(tn)
+		sb.Template = tmpl
+		if err := s.InsertWithQuota(ctx, sb); err != nil {
+			t.Fatalf("%s: %v", tmpl, err)
+		}
+	}
+	sb := newSB(tn)
+	sb.Template = "img-c"
+	if err := s.InsertWithQuota(ctx, sb); !errors.Is(err, ErrQuota) {
+		t.Fatalf("a third distinct image must hit the cap, got %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE sandboxes SET state = 'Terminated' WHERE tenant_id = $1 AND template = 'img-b'`, tn); err != nil {
+		t.Fatal(err)
+	}
+	sb2 := newSB(tn)
+	sb2.Template = "img-c"
+	if err := s.InsertWithQuota(ctx, sb2); err != nil {
+		t.Fatalf("terminating a sandbox frees an image slot: %v", err)
+	}
+}

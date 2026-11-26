@@ -196,9 +196,11 @@ generation (deterministic name).
   - tainted dedicated node pool
 
 ### D6. Postgres is the source of truth for product state; CRDs for pod state only
-- **Postgres holds** tenants, keys (hashed), sandboxes and usage events. **CRDs hold** pod state only.
-- **CAS state transitions:** concurrent resumes give exactly one winner (tested). There is never more than one pod per sandbox.
-- **A generation number** is bumped on every (re)start and fences claims and snapshots.
+- **Postgres holds** tenants, keys (hashed), sandboxes, usage events and durable lifecycle jobs. **CRDs hold** pod state only.
+- **CAS state transitions:** concurrent resumes give exactly one winner (tested). State transition and job enqueue/completion commit in one transaction. There is never more than one intended pod generation per sandbox.
+- **Durable execution:** leased workers retry start, pause/autosave and delete with heartbeat leases, per-sandbox advisory locks and revision fencing. Superseding jobs (delete or emergency pause) cancel older work. Multi-replica operation is designed in but remains to be validated continuously; kind runs one replica.
+- **Preallocated generation identity:** generation, deterministic claim name and execd token are persisted before any external effect, then reused by every replay so a retry does not allocate another generation.
+- **A generation number** is bumped on every new (re)start intent and fences claims and snapshots.
 - **One instance, many sessions:** any number of exec, file or shell sessions share the sandbox's single pod. Sessions
   never create pods; new pods come only from create, resume and (planned) fork. Two pods for one sandbox would each
   hydrate `/workspace` and race on upload: split-brain and silent data loss, which CAS + fencing rule out.
@@ -212,6 +214,10 @@ generation (deterministic name).
   hydrated into **any** warm pod.
 - **How it moves:** `sandbox-snap` is injected by an init container and moves bytes directly to and from object storage using
   short-lived presigned URLs. **No storage credentials in the sandbox**, and path-traversal is rejected on hydrate.
+- **Quiesced archive boundary:** before packing, the helper stops eligible workload processes while protecting PID 1,
+  its own process and the execd/runner ancestors. It records PID+start-time identities, rescans for children and thaws
+  after packing, before upload. This prevents concurrent workspace mutation during packing; it does **not** claim
+  application-transaction consistency or persist processes/memory. Recoverable failures thaw before returning to Running.
 - **Scope:** only `/workspace` persists. Processes, memory and other paths don't.
 - **Pod interruptions:** the workspace lives on the pod while running, so anything since the last pause depends on the
   pod surviving. The server layers its defences:
@@ -223,9 +229,12 @@ generation (deterministic name).
   3. **Detect loss** (crash, OOM-killed node, forced delete): every 10 s the server compares `Running` sandboxes with their
      pods. A gone or replaced pod → `Paused` on the last snapshot, or `Failed` if there is none. A sandbox container
      restarted *in place* (e.g. OOM) keeps its files: the server re-binds execd and records the restart.
-  4. **Bound the loss on crashes:** periodic incremental autosave (roadmap, needs incremental snapshots).
-  A new snapshot never overwrites the last good one: it is written under the new generation's prefix and the sandbox
-  switches to it only after a complete upload.
+  4. **Bound the loss on crashes:** optional periodic **full** autosave (`AUTOSAVE_INTERVAL_SECONDS`) uses the same
+     quiesced pack/upload path without releasing the pod and advances the persisted recovery point. Work is disabled
+     by default outside kind; packing pauses processes briefly and changed archives consume full upload bandwidth.
+     Incremental/deduplicated autosave remains roadmap work.
+  A new snapshot never overwrites the last good one: explicit pauses use the generation prefix and autosaves use a new
+  generation-scoped revision prefix. The sandbox switches its pointer only after a complete upload.
 - **Rejected:**
 
   | Option | Why not |
@@ -251,7 +260,8 @@ generation (deterministic name).
 ### D9. Tenancy: operator-minted API keys; quotas enforced before claiming
 - Tenants and API keys (SHA-256 hashed, shown once) are minted by an operator (`sandbox admin …` or `/admin/v1/*` with an
   admin token). No SSO in v1.
-- Per-tenant max-running quota is checked atomically before a pod is claimed: `429` + `Retry-After`, never a timeout.
+- Per-tenant max-running quota is checked atomically **before any Kubernetes side effect** (including template/pool creation): `429` + `Retry-After`, never a timeout. Create workers provision templates and claims only after admission.
+- Create resource CPU/memory values are checked against the one configured resource class. Matching values apply that class; other dimensions or quantities return 400 rather than being silently substituted.
 - All sandboxes share a namespace per cell; isolation comes from gVisor + NetworkPolicy. *Rejected:* namespace-per-tenant,
   which fragments warm pools, and K8s ResourceQuota, which is per-namespace and fails as a timeout instead of a clean error.
 - **Metering:** append-only `usage_events` from day one: showback now, billing later.

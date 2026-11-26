@@ -1,6 +1,7 @@
-// Package lifecycle orchestrates sandbox state transitions (D6): create → Running, pause (snapshot /workspace
-// to object storage, release the pod), resume (claim any warm pod, bind, hydrate), delete, expiry, reconciliation.
-// Long operations run asynchronously; the API returns 202 and clients observe state (OpenSandbox semantics).
+// Package lifecycle orchestrates durable sandbox state transitions (D6):
+// create → Running, pause (snapshot /workspace), resume, delete, expiry and
+// reconciliation. Public operations remain asynchronous; persisted jobs replay
+// interrupted external effects with generation and revision fencing.
 package lifecycle
 
 import (
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/abhiroop93/sandbox/internal/cell"
 	"github.com/abhiroop93/sandbox/internal/execd"
@@ -26,6 +28,7 @@ const (
 	Workspace  = "/workspace"
 	SnapTool   = cell.SnapTool
 	snapOutDir = "/workspace/.sandbox-snap"
+	freezePath = "/opt/sandbox-bin/.frozen-processes"
 )
 
 // NetworkPolicy is the OpenSandbox networkPolicy shape.
@@ -39,12 +42,14 @@ type NetworkPolicy struct {
 }
 
 type CreateSpec struct {
-	Image      string
-	Entrypoint []string
-	Env        map[string]string
-	Metadata   map[string]string
-	Timeout    *time.Duration // nil = no expiry
-	Network    *NetworkPolicy
+	Image            string
+	Entrypoint       []string
+	Env              map[string]string
+	Metadata         map[string]string
+	Timeout          *time.Duration // nil = no expiry
+	Network          *NetworkPolicy
+	ResourceLimits   map[string]string
+	ResourceRequests map[string]string
 }
 
 type Manager struct {
@@ -54,13 +59,18 @@ type Manager struct {
 	poolSize      int
 	defaultEgress string // "deny" | "allow"
 	log           *slog.Logger
-	// ShutdownGrace bounds an emergency save: the pod is killed after this anyway (matches the pod grace period).
+	WorkerCount   int
+	WorkerID      string
+	// AutosaveInterval is zero when periodic workspace archives are disabled.
+	AutosaveInterval time.Duration
+	ReconcileTimeout time.Duration
+	// ShutdownGrace bounds an emergency save: the pod is killed after this anyway.
 	ShutdownGrace time.Duration
 }
 
 func New(st *store.Store, c *cell.Cell, snap *snapshot.Store, poolSize int, defaultEgress string, log *slog.Logger) *Manager {
 	return &Manager{st: st, cell: c, snap: snap, poolSize: poolSize, defaultEgress: defaultEgress, log: log,
-		ShutdownGrace: 90 * time.Second}
+		WorkerCount: 4, WorkerID: uuid.NewString(), ReconcileTimeout: 30 * time.Second, ShutdownGrace: 90 * time.Second}
 }
 
 var ErrInvalid = errors.New("invalid request")
@@ -88,17 +98,46 @@ func ValidateNetwork(np *NetworkPolicy) error {
 	return nil
 }
 
-// Create records the sandbox (quota-checked) and provisions it asynchronously.
+func validateResourceMap(field string, values map[string]string, cpu, memory string) error {
+	expected := map[string]string{"cpu": cpu, "memory": memory}
+	for name, value := range values {
+		want, ok := expected[name]
+		if !ok {
+			return fmt.Errorf("%w: %s.%s is unsupported; only cpu and memory are available", ErrInvalid, field, name)
+		}
+		gotQuantity, err := resource.ParseQuantity(value)
+		if err != nil {
+			return fmt.Errorf("%w: invalid %s.%s %q", ErrInvalid, field, name, value)
+		}
+		wantQuantity, _ := resource.ParseQuantity(want)
+		if gotQuantity.Cmp(wantQuantity) != 0 {
+			return fmt.Errorf("%w: %s.%s=%s, fixed resource class is %s (custom resource classes are not supported)",
+				ErrInvalid, field, name, value, want)
+		}
+	}
+	return nil
+}
+
+// Create performs resource and quota admission before any Kubernetes side
+// effect. Requests matching the one configured pod resource class are honored;
+// other resource classes are rejected rather than silently ignored.
 func (m *Manager) Create(ctx context.Context, tenant string, spec CreateSpec) (*store.Sandbox, error) {
 	if err := ValidateNetwork(spec.Network); err != nil {
 		return nil, err
 	}
-	tmpl, err := m.cell.EnsureTemplate(ctx, spec.Image, m.poolSize)
-	if err != nil {
-		return nil, fmt.Errorf("template: %w", err)
+	cpu, memory := m.cell.FixedResources()
+	if err := validateResourceMap("resourceLimits", spec.ResourceLimits, cpu, memory); err != nil {
+		return nil, err
 	}
-	sb := &store.Sandbox{ID: uuid.NewString(), Tenant: tenant, Cell: "cell-1", Template: tmpl, Image: spec.Image,
-		Entrypoint: spec.Entrypoint, Env: spec.Env, Metadata: spec.Metadata}
+	if err := validateResourceMap("resourceRequests", spec.ResourceRequests, cpu, memory); err != nil {
+		return nil, err
+	}
+	id := uuid.NewString()
+	claim := cell.ClaimName(id, 1)
+	token := execd.NewToken()
+	sb := &store.Sandbox{ID: id, Tenant: tenant, Cell: "cell-1", Template: cell.TemplateName(spec.Image), Image: spec.Image,
+		Entrypoint: spec.Entrypoint, Env: spec.Env, Metadata: spec.Metadata, Generation: 1,
+		ClaimName: &claim, ExecdToken: &token}
 	if spec.Network != nil {
 		sb.Network, _ = json.Marshal(spec.Network)
 	}
@@ -109,95 +148,304 @@ func (m *Manager) Create(ctx context.Context, tenant string, spec CreateSpec) (*
 	if err := m.st.InsertWithQuota(ctx, sb); err != nil {
 		return nil, err
 	}
-	go m.start(sb.ID, false)
 	return m.st.Get(ctx, tenant, sb.ID)
 }
 
-// start claims a warm pod for a Pending/Resuming sandbox, binds execd, applies network policy, hydrates (resume).
-func (m *Manager) start(id string, hydrate bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	t0 := time.Now()
-	from := []string{store.Pending}
-	if hydrate {
-		from = []string{store.Resuming}
-	}
-	// Bump generation + reserve a deterministic claim name atomically (fencing, D6).
-	sb, err := m.st.Transition(ctx, id, from, from[0], "", store.Patch{BumpGeneration: true})
+// Pause queues a process-quiesced archive followed by pod release.
+func (m *Manager) Pause(ctx context.Context, tenant, id string) error {
+	cur, err := m.st.Get(ctx, tenant, id)
 	if err != nil {
-		m.log.Error("start: transition", "id", id, "err", err)
-		return
+		return err
 	}
-	fail := func(stage string, err error) {
-		m.log.Error("start failed", "id", id, "stage", stage, "err", err)
-		msg := stage + ": " + err.Error()
-		if sb.ClaimName != nil {
-			_ = m.cell.Release(context.Background(), *sb.ClaimName)
-		}
-		_, _ = m.st.Transition(context.Background(), id, from, store.Failed, "failed",
-			store.Patch{StateMessage: &msg, ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()})
-	}
-	claim, err := m.cell.Claim(ctx, sb.Template, sb.ID, sb.Tenant, sb.Generation)
-	if err != nil {
-		fail("claim", err)
-		return
-	}
-	sb.ClaimName = &claim
-	if sb, err = m.st.Transition(ctx, id, from, from[0], "", store.Patch{ClaimName: store.Str(claim)}); err != nil {
-		_ = m.cell.Release(ctx, claim)
-		m.log.Error("start: record claim", "id", id, "err", err)
-		return
-	}
-	pod, ip, err := m.cell.WaitReady(ctx, claim, 5*time.Minute)
-	if err != nil {
-		fail("wait-ready", err)
-		return
-	}
-	tClaim := time.Since(t0)
-	if err := m.applyPolicy(ctx, sb); err != nil {
-		fail("network-policy", err)
-		return
-	}
-	token := execd.NewToken()
-	if err := execd.Bind(ctx, ip, sb.ID, sb.Generation, token, sb.Env, sb.Tenant); err != nil {
-		fail("execd-bind", err)
-		return
-	}
-	tBind := time.Since(t0)
-	var tHydrate time.Duration
-	if hydrate && sb.SnapshotKey != nil {
-		urls, err := m.snap.GetURLs(ctx, *sb.SnapshotKey)
-		if err != nil {
-			fail("presign-get", err)
-			return
-		}
-		if len(urls) > 0 {
-			b64 := encodeURLs(urls)
-			res, err := execd.Run(ctx, ip, token, []string{SnapTool, "hydrate", Workspace, b64}, Workspace, 10*time.Minute)
-			if err != nil || res.ExitCode != 0 {
-				fail("hydrate", cmdErr(res, err))
-				return
-			}
-		}
-		tHydrate = time.Since(t0) - tBind
-	}
-	ev := "started"
-	if hydrate {
-		ev = "resumed"
-	}
-	if _, err := m.st.Transition(ctx, id, from, store.Running, ev, store.Patch{PodName: store.Str(pod), PodIP: store.Str(ip),
-		ExecdToken: store.Str(token)}); err != nil {
-		_ = m.cell.Release(ctx, claim) // sandbox was deleted while starting
-		return
-	}
-	m.protect(ctx, sb.ID, pod, ip, token) // after Running: not on the create latency path
-	m.log.Info("sandbox running", "id", id, "gen", sb.Generation, "resume", hydrate, "claim_ms", tClaim.Milliseconds(),
-		"bind_ms", (tBind - tClaim).Milliseconds(), "hydrate_ms", tHydrate.Milliseconds(), "total_ms", time.Since(t0).Milliseconds())
+	payload := operationPayload{TargetPrefix: snapshot.Prefix(id, cur.Generation)}
+	return m.enqueueCapture(ctx, cur, store.JobPause, payload, []string{store.Running}, "")
 }
 
-// protect arms the pod's preStop hold (so a graceful shutdown waits for the server to save the workspace) and marks it
-// not-safe-to-evict for the cluster autoscaler. Best effort: a failure only weakens interruption handling.
+// Resume durably preallocates the next generation and queues hydration.
+func (m *Manager) Resume(ctx context.Context, tenant, id string) error {
+	cur, err := m.st.Get(ctx, tenant, id)
+	if err != nil {
+		return err
+	}
+	gen := cur.Generation + 1
+	claim := cell.ClaimName(id, gen)
+	token := execd.NewToken()
+	job := &store.Job{SandboxID: id, Kind: store.JobStart, Generation: gen,
+		Payload: encodePayload(operationPayload{Hydrate: true})}
+	_, err = m.st.TransitionWithJob(ctx, id, []string{store.Paused}, store.Resuming, "", store.Patch{
+		BumpGeneration: true, ClaimName: store.Str(claim), ExecdToken: store.Str(token)}, job)
+	return err
+}
+
+// Delete queues idempotent pod, policy and snapshot cleanup.
+func (m *Manager) Delete(ctx context.Context, tenant, id string) error {
+	if _, err := m.st.Get(ctx, tenant, id); err != nil {
+		return err
+	}
+	return m.terminate(ctx, id, "terminated")
+}
+
+func (m *Manager) terminate(ctx context.Context, id, ev string) error {
+	cur, err := m.st.Get(ctx, "", id)
+	if err != nil {
+		return err
+	}
+	live := []string{store.Pending, store.Running, store.Pausing, store.Paused, store.Resuming, store.Failed}
+	job := &store.Job{SandboxID: id, Kind: store.JobDelete, Generation: cur.Generation,
+		Payload: encodePayload(operationPayload{Event: ev})}
+	_, err = m.st.TransitionWithJob(ctx, id, live, store.Stopping, "", store.Patch{}, job)
+	return err
+}
+
+// Renew sets a new expiry without changing lifecycle state.
+func (m *Manager) Renew(ctx context.Context, tenant, id string, at time.Time) (*store.Sandbox, error) {
+	cur, err := m.st.Get(ctx, tenant, id)
+	if err != nil {
+		return nil, err
+	}
+	t := at.UTC()
+	tp := &t
+	return m.st.Transition(ctx, id, []string{cur.State}, cur.State, "", store.Patch{StateMessage: &cur.StateMessage, ExpiresAt: &tp})
+}
+
+// RecoverInterrupted reconstructs jobs only for rows written by pre-queue
+// versions. Existing durable jobs keep their normal lease and replay semantics.
+func (m *Manager) RecoverInterrupted(ctx context.Context) {
+	states := []string{store.Pending, store.Resuming, store.Pausing, store.Stopping}
+	stuck, err := m.st.InStates(ctx, states)
+	if err != nil {
+		m.log.Error("recover: list", "err", err)
+		return
+	}
+	for _, sb := range stuck {
+		if _, err := m.st.CurrentJob(ctx, sb.ID); err == nil {
+			continue
+		}
+		switch sb.State {
+		case store.Pending, store.Resuming:
+			m.recoverStart(ctx, sb)
+		case store.Pausing:
+			p := operationPayload{TargetPrefix: snapshot.Prefix(sb.ID, sb.Generation)}
+			if err := m.enqueueCapture(ctx, sb, store.JobPause, p, []string{store.Pausing}, "pause recovered after server restart"); err != nil {
+				m.log.Error("recover pause", "id", sb.ID, "err", err)
+			}
+		case store.Stopping:
+			job := &store.Job{SandboxID: sb.ID, Kind: store.JobDelete, Generation: sb.Generation,
+				Payload: encodePayload(operationPayload{Event: "terminated"})}
+			if _, err := m.st.TransitionWithJob(ctx, sb.ID, []string{store.Stopping}, store.Stopping, "", store.Patch{}, job); err != nil {
+				m.log.Error("recover delete", "id", sb.ID, "err", err)
+			}
+		}
+	}
+}
+
+func (m *Manager) recoverStart(ctx context.Context, sb *store.Sandbox) {
+	gen := sb.Generation
+	patch := store.Patch{}
+	if gen == 0 {
+		gen = 1
+		patch.BumpGeneration = true
+	}
+	claim := deref(sb.ClaimName)
+	if claim == "" {
+		claim = cell.ClaimName(sb.ID, gen)
+		patch.ClaimName = store.Str(claim)
+	}
+	if deref(sb.ExecdToken) == "" {
+		patch.ExecdToken = store.Str(execd.NewToken())
+	}
+	job := &store.Job{SandboxID: sb.ID, Kind: store.JobStart, Generation: gen,
+		Payload: encodePayload(operationPayload{Hydrate: sb.State == store.Resuming})}
+	if _, err := m.st.TransitionWithJob(ctx, sb.ID, []string{sb.State}, sb.State, "", patch, job); err != nil {
+		m.log.Error("recover start", "id", sb.ID, "err", err)
+	}
+}
+
+// Loop starts leased workers and bounded maintenance loops. Workers exit through
+// ctx; crash-abandoned leases expire and can be reclaimed by any replica.
+func (m *Manager) Loop(ctx context.Context) {
+	for i := 0; i < m.WorkerCount; i++ {
+		go m.workerLoop(ctx, fmt.Sprintf("%s-%d", m.WorkerID, i))
+	}
+	go m.cell.WatchTerminating(ctx, m.onTerminating)
+	go m.maintenanceLoop(ctx)
+	<-ctx.Done()
+}
+
+func (m *Manager) maintenanceLoop(ctx context.Context) {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if exp, err := m.st.Expired(ctx, 100); err == nil {
+			for _, sb := range exp {
+				if err := m.terminate(ctx, sb.ID, "expired"); err == nil {
+					m.log.Info("sandbox expiry queued", "id", sb.ID)
+				}
+			}
+		}
+		rctx, cancel := context.WithTimeout(ctx, m.ReconcileTimeout)
+		m.reconcile(rctx)
+		m.checkPods(rctx)
+		cancel()
+		if m.AutosaveInterval > 0 {
+			m.scheduleAutosaves(ctx)
+		}
+	}
+}
+
+// ---------------------------------------------------------------- pod interruptions
+
+type verdict int
+
+const (
+	podOK verdict = iota
+	podTerminating
+	podRestarted
+	podLost
+)
+
+// podVerdict decides what a Running sandbox's pod state means. found=false: no pod with the recorded name.
+func podVerdict(sb *store.Sandbox, p cell.PodInfo, found bool) (verdict, string) {
+	switch {
+	case !found:
+		return podLost, "pod no longer exists (node failure or forced deletion)"
+	case p.Terminating:
+		return podTerminating, ""
+	case p.Phase == corev1.PodFailed || p.Phase == corev1.PodSucceeded:
+		return podLost, "pod stopped (" + string(p.Phase) + ")"
+	case p.IP != deref(sb.PodIP):
+		return podLost, "pod was replaced"
+	case p.BoundRestarts >= 0 && p.Restarts > p.BoundRestarts:
+		return podRestarted, p.LastExit
+	}
+	return podOK, ""
+}
+
+func (m *Manager) checkPods(ctx context.Context) {
+	running, err := m.st.InStates(ctx, []string{store.Running})
+	if err != nil || len(running) == 0 {
+		return
+	}
+	pods, err := m.cell.SandboxPods(ctx)
+	if err != nil {
+		m.log.Warn("pod reconciliation list failed", "err", err)
+		return
+	}
+	for _, sb := range running {
+		p, found := pods[deref(sb.PodName)]
+		switch v, why := podVerdict(sb, p, found); v {
+		case podTerminating:
+			m.onTerminating(p.Name, sb.ID)
+		case podRestarted:
+			m.rebind(ctx, sb, p, why)
+		case podLost:
+			m.markLost(ctx, sb, []string{store.Running}, why)
+		}
+	}
+}
+
+// onTerminating gives emergency pause precedence over an ordinary or automatic
+// capture. Revision-based replacement cancels the previous worker.
+func (m *Manager) onTerminating(pod, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cur, err := m.st.Get(ctx, "", id)
+	if err != nil || deref(cur.PodName) != pod {
+		return
+	}
+	msg := "pod is being shut down by the cluster; saving workspace"
+	payload := operationPayload{Emergency: true, TargetPrefix: snapshot.Prefix(id, cur.Generation)}
+	switch cur.State {
+	case store.Running:
+		if err := m.enqueueCapture(ctx, cur, store.JobPause, payload, []string{store.Running}, msg); err == nil {
+			m.log.Warn("pod shutting down, emergency save queued", "id", id, "pod", pod)
+		}
+	case store.Pausing:
+		job, err := m.st.CurrentJob(ctx, id)
+		if err != nil {
+			return
+		}
+		old := decodePayload(job)
+		if (job.Kind == store.JobPause || job.Kind == store.JobAutosave) && !old.Emergency {
+			if err := m.enqueueCapture(ctx, cur, store.JobPause, payload, []string{store.Pausing}, msg); err == nil {
+				m.log.Warn("pod shutdown preempted previous capture", "id", id, "pod", pod)
+			}
+		}
+	}
+}
+
+func (m *Manager) markLost(ctx context.Context, sb *store.Sandbox, from []string, why string) {
+	clear := store.Patch{ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()}
+	to, msg := store.Failed, why+"; no saved snapshot, workspace lost"
+	if sb.SnapshotKey != nil {
+		to, msg = store.Paused, why+"; changes since the last saved snapshot were lost. Resume to continue."
+	}
+	clear.StateMessage = &msg
+	if _, err := m.st.Transition(ctx, sb.ID, from, to, "lost", clear); err != nil {
+		return
+	}
+	if sb.ClaimName != nil {
+		_ = m.cell.Release(ctx, *sb.ClaimName)
+	}
+	m.log.Warn("sandbox pod lost", "id", sb.ID, "to", to, "why", why)
+}
+
+func (m *Manager) rebind(ctx context.Context, sb *store.Sandbox, p cell.PodInfo, why string) {
+	ip, token := deref(sb.PodIP), deref(sb.ExecdToken)
+	if err := execd.Bind(ctx, ip, sb.ID, sb.Generation, token, sb.Env, sb.Tenant); err != nil {
+		m.log.Error("rebind after container restart failed", "id", sb.ID, "err", err)
+		return
+	}
+	m.protect(ctx, sb.ID, p.Name, ip, token)
+	msg := "sandbox container restarted (" + why + "); files kept, running processes were lost"
+	_, _ = m.st.Transition(ctx, sb.ID, []string{store.Running}, store.Running, "restarted", store.Patch{StateMessage: &msg})
+	m.log.Warn("sandbox container restarted, re-bound", "id", sb.ID, "why", why)
+}
+
+func (m *Manager) reconcile(ctx context.Context) {
+	started := time.Now()
+	known, err := m.st.ActiveClaims(ctx)
+	if err != nil {
+		m.log.Warn("reconcile: known claims", "err", err)
+		return
+	}
+	live, err := m.cell.ListClaims(ctx)
+	if err != nil {
+		m.log.Warn("reconcile: live claims", "err", err)
+		return
+	}
+	orphans, reclaimed, failures := 0, 0, 0
+	for claim, sbID := range live {
+		if _, ok := known[claim]; ok {
+			continue
+		}
+		orphans++
+		if cur, err := m.st.Get(ctx, "", sbID); err == nil && (cur.State == store.Pending || cur.State == store.Resuming) {
+			continue
+		}
+		if err := m.cell.Release(ctx, claim); err != nil {
+			failures++
+			m.log.Warn("reaping orphan claim failed", "claim", claim, "sandbox", sbID, "err", err)
+		} else {
+			reclaimed++
+		}
+	}
+	m.log.Info("claim reconciliation complete", "duration_ms", time.Since(started).Milliseconds(),
+		"orphans", orphans, "reclaimed", reclaimed, "failures", failures)
+}
+
+// protect arms preStop and tells the autoscaler not to evict a claimed pod.
+// protect runs after the state change that completes a job. That transition deletes the job row, which makes the
+// worker's heartbeat cancel the job context; arming the guard must outlive that, or the sandbox starts without
+// eviction protection.
 func (m *Manager) protect(ctx context.Context, id, pod, ip, token string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+	defer cancel()
 	if res, err := execd.Run(ctx, ip, token, []string{SnapTool, "guard", "arm", cell.GuardMarker}, Workspace, 30*time.Second); err != nil || res.ExitCode != 0 {
 		m.log.Warn("arm shutdown guard failed", "id", id, "err", cmdErr(res, err))
 	}
@@ -206,7 +454,6 @@ func (m *Manager) protect(ctx context.Context, id, pod, ip, token string) {
 	}
 }
 
-// disarm lets the pod's preStop hook return, so a pod the server is releasing shuts down at once.
 func (m *Manager) disarm(sb *store.Sandbox) {
 	ip, token := deref(sb.PodIP), deref(sb.ExecdToken)
 	if ip == "" || token == "" {
@@ -244,336 +491,6 @@ func cmdErr(res *execd.Result, err error) error {
 		return err
 	}
 	return fmt.Errorf("exit %d: %s %s", res.ExitCode, strings.TrimSpace(res.Stderr), res.Error)
-}
-
-// Pause snapshots /workspace to object storage and releases the pod (async).
-func (m *Manager) Pause(ctx context.Context, tenant, id string) error {
-	if _, err := m.st.Get(ctx, tenant, id); err != nil {
-		return err
-	}
-	sb, err := m.st.Transition(ctx, id, []string{store.Running}, store.Pausing, "", store.Patch{})
-	if err != nil {
-		return err
-	}
-	go m.pause(sb, false)
-	return nil
-}
-
-// pause snapshots and releases the pod. emergency=true: the cluster is already shutting the pod down (drain,
-// eviction, scale-down); the preStop hook holds it for at most the grace period while this runs.
-func (m *Manager) pause(sb *store.Sandbox, emergency bool) {
-	limit := 15 * time.Minute
-	if emergency {
-		limit = m.ShutdownGrace // the pod may be on a dead node: don't wait longer than it can live
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
-	defer cancel()
-	t0 := time.Now()
-	back := func(stage string, err error) {
-		m.log.Error("pause failed", "id", sb.ID, "stage", stage, "err", err, "emergency", emergency)
-		if emergency { // the pod is going away: fall back to the last good snapshot (or Failed)
-			m.markLost(context.Background(), sb, []string{store.Pausing},
-				"pod was shut down by the cluster before its workspace could be saved ("+stage+": "+err.Error()+")")
-			m.disarm(sb)
-			return
-		}
-		// pod is still alive → back to Running, nothing lost
-		msg := "pause failed (" + stage + "): " + err.Error()
-		_, _ = m.st.Transition(context.Background(), sb.ID, []string{store.Pausing}, store.Running, "", store.Patch{StateMessage: &msg})
-	}
-	ip, token := deref(sb.PodIP), deref(sb.ExecdToken)
-	res, err := execd.Run(ctx, ip, token, []string{SnapTool, "pack", Workspace, snapOutDir}, Workspace, 10*time.Minute)
-	if err != nil || res.ExitCode != 0 {
-		back("pack", cmdErr(res, err))
-		return
-	}
-	var packed struct {
-		Chunks int
-		Bytes  int64
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(lastLine(res.Stdout))), &packed); err != nil {
-		back("pack-output", fmt.Errorf("%v: %q", err, res.Stdout))
-		return
-	}
-	tPack := time.Since(t0)
-	prefix := snapshot.Prefix(sb.ID, sb.Generation)
-	if prefix == deref(sb.SnapshotKey) {
-		back("snapshot-key", fmt.Errorf("refusing to overwrite the current snapshot %s", prefix))
-		return
-	}
-	// New snapshots go under this generation's prefix; the sandbox switches to it only after a complete upload, so
-	// the last good snapshot is never overwritten. Clear leftovers of an earlier failed attempt first: hydrate reads
-	// every chunk under the prefix.
-	if err := m.snap.Delete(ctx, prefix); err != nil {
-		back("clear-prefix", err)
-		return
-	}
-	urls, err := m.snap.PutURLs(ctx, prefix, packed.Chunks)
-	if err != nil {
-		back("presign-put", err)
-		return
-	}
-	res, err = execd.Run(ctx, ip, token, []string{SnapTool, "upload", snapOutDir, encodeURLs(urls)}, Workspace, 10*time.Minute)
-	if err != nil || res.ExitCode != 0 {
-		back("upload", cmdErr(res, err))
-		return
-	}
-	tUpload := time.Since(t0) - tPack
-	old := deref(sb.SnapshotKey)
-	claim := deref(sb.ClaimName)
-	bytes := packed.Bytes
-	pb := &bytes
-	msg := ""
-	if emergency {
-		msg = "pod was shut down by the cluster (drain, eviction or scale-down); workspace files were saved, " +
-			"running processes were not. Resume to continue."
-	}
-	if _, err := m.st.Transition(ctx, sb.ID, []string{store.Pausing}, store.Paused, "paused", store.Patch{
-		StateMessage: &msg, SnapshotKey: store.Str(prefix), SnapshotBytes: &pb, ClaimName: store.NullStr(),
-		PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()}); err != nil {
-		m.log.Error("pause: record", "id", sb.ID, "err", err)
-		return
-	}
-	m.disarm(sb) // saved: let the preStop hook return so the pod goes away now
-	if claim != "" {
-		_ = m.cell.Release(ctx, claim) // pod deleted, never reused
-	}
-	if old != "" && old != prefix {
-		_ = m.snap.Delete(ctx, old)
-	}
-	m.log.Info("sandbox paused", "id", sb.ID, "gen", sb.Generation, "emergency", emergency, "bytes", packed.Bytes, "chunks", packed.Chunks,
-		"pack_ms", tPack.Milliseconds(), "upload_ms", tUpload.Milliseconds(), "total_ms", time.Since(t0).Milliseconds())
-}
-
-// Resume claims any warm pod for the template, binds it and hydrates /workspace (async).
-func (m *Manager) Resume(ctx context.Context, tenant, id string) error {
-	if _, err := m.st.Get(ctx, tenant, id); err != nil {
-		return err
-	}
-	if _, err := m.st.Transition(ctx, id, []string{store.Paused}, store.Resuming, "", store.Patch{}); err != nil {
-		return err
-	}
-	go m.start(id, true)
-	return nil
-}
-
-// Delete terminates a sandbox: release pod, drop policy and snapshots.
-func (m *Manager) Delete(ctx context.Context, tenant, id string) error {
-	if _, err := m.st.Get(ctx, tenant, id); err != nil {
-		return err
-	}
-	return m.terminate(ctx, id, "terminated")
-}
-
-func (m *Manager) terminate(ctx context.Context, id, ev string) error {
-	live := []string{store.Pending, store.Running, store.Pausing, store.Paused, store.Resuming, store.Failed}
-	sb, err := m.st.Transition(ctx, id, live, store.Stopping, "", store.Patch{})
-	if err != nil {
-		return err
-	}
-	m.disarm(sb) // deleting: nothing to save, don't let the preStop hook hold the pod
-	if sb.ClaimName != nil {
-		_ = m.cell.Release(ctx, *sb.ClaimName)
-	}
-	_ = m.cell.DeleteSandboxPolicy(ctx, id)
-	_ = m.snap.Delete(ctx, "ws/"+id+"/")
-	_, err = m.st.Transition(ctx, id, []string{store.Stopping}, store.Terminated, ev, store.Patch{
-		ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr(), SnapshotKey: store.NullStr()})
-	return err
-}
-
-// Renew sets a new expiry.
-func (m *Manager) Renew(ctx context.Context, tenant, id string, at time.Time) (*store.Sandbox, error) {
-	cur, err := m.st.Get(ctx, tenant, id)
-	if err != nil {
-		return nil, err
-	}
-	t := at.UTC()
-	tp := &t
-	return m.st.Transition(ctx, id, []string{cur.State}, cur.State, "", store.Patch{StateMessage: &cur.StateMessage, ExpiresAt: &tp})
-}
-
-// RecoverInterrupted settles operations that were in flight when the server stopped. Async steps run in-process
-// (no durable queue yet, see roadmap #1), so after a restart nothing will ever finish them, and Pending/Resuming
-// rows would hold tenant quota forever. Must run before serving traffic (single replica).
-func (m *Manager) RecoverInterrupted(ctx context.Context) {
-	stuck, err := m.st.InStates(ctx, []string{store.Pending, store.Resuming, store.Pausing})
-	if err != nil {
-		m.log.Error("recover: list", "err", err)
-		return
-	}
-	for _, sb := range stuck {
-		claim := deref(sb.ClaimName)
-		if sb.State == store.Pausing && claim != "" {
-			if _, _, err := m.cell.WaitReady(ctx, claim, 2*time.Second); err == nil {
-				// The pod is still alive: nothing was lost, the pause just didn't finish. Let the user retry.
-				msg := "pause interrupted by server restart; retry pause"
-				_, _ = m.st.Transition(ctx, sb.ID, []string{store.Pausing}, store.Running, "", store.Patch{StateMessage: &msg})
-				m.log.Warn("recovered interrupted pause", "id", sb.ID)
-				continue
-			}
-		}
-		if claim != "" {
-			_ = m.cell.Release(ctx, claim)
-		}
-		msg := strings.ToLower(sb.State) + " interrupted by server restart; create or resume again"
-		if sb.State == store.Resuming || sb.State == store.Pausing {
-			if sb.SnapshotKey != nil {
-				// A previous snapshot exists: keep the workspace resumable instead of failing it.
-				m2 := msg + " (last snapshot kept)"
-				_, _ = m.st.Transition(ctx, sb.ID, []string{sb.State}, store.Paused, "", store.Patch{StateMessage: &m2,
-					ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()})
-				m.log.Warn("recovered interrupted operation to Paused", "id", sb.ID, "was", sb.State)
-				continue
-			}
-		}
-		_, _ = m.st.Transition(ctx, sb.ID, []string{sb.State}, store.Failed, "failed", store.Patch{StateMessage: &msg,
-			ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()})
-		m.log.Warn("recovered interrupted operation to Failed", "id", sb.ID, "was", sb.State)
-	}
-}
-
-// Loop runs expiry and two-way reconciliation until ctx ends (D6: reconcile Postgres ⇄ CRDs).
-func (m *Manager) Loop(ctx context.Context) {
-	go m.cell.WatchTerminating(ctx, m.onTerminating)
-	t := time.NewTicker(10 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		if exp, err := m.st.Expired(ctx, 100); err == nil {
-			for _, sb := range exp {
-				if err := m.terminate(ctx, sb.ID, "expired"); err == nil {
-					m.log.Info("sandbox expired", "id", sb.ID)
-				}
-			}
-		}
-		m.reconcile(ctx)
-		m.checkPods(ctx)
-	}
-}
-
-// ---------------------------------------------------------------- pod interruptions
-
-type verdict int
-
-const (
-	podOK          verdict = iota
-	podTerminating         // graceful shutdown in progress: save the workspace now
-	podRestarted           // sandbox container restarted in place (e.g. OOM): files kept, execd must be re-bound
-	podLost                // pod gone or replaced: fall back to the last snapshot
-)
-
-// podVerdict decides what a Running sandbox's pod state means. found=false: no pod with the recorded name.
-func podVerdict(sb *store.Sandbox, p cell.PodInfo, found bool) (verdict, string) {
-	switch {
-	case !found:
-		return podLost, "pod no longer exists (node failure or forced deletion)"
-	case p.Terminating:
-		return podTerminating, ""
-	case p.Phase == corev1.PodFailed || p.Phase == corev1.PodSucceeded:
-		return podLost, "pod stopped (" + string(p.Phase) + ")"
-	case p.IP != deref(sb.PodIP):
-		return podLost, "pod was replaced"
-	case p.BoundRestarts >= 0 && p.Restarts > p.BoundRestarts:
-		return podRestarted, p.LastExit
-	}
-	return podOK, ""
-}
-
-// checkPods compares every Running sandbox with its pod (one pod list per tick).
-func (m *Manager) checkPods(ctx context.Context) {
-	running, err := m.st.InStates(ctx, []string{store.Running})
-	if err != nil || len(running) == 0 {
-		return
-	}
-	pods, err := m.cell.SandboxPods(ctx)
-	if err != nil {
-		return
-	}
-	for _, sb := range running {
-		p, found := pods[deref(sb.PodName)]
-		switch v, why := podVerdict(sb, p, found); v {
-		case podTerminating:
-			m.onTerminating(p.Name, sb.ID)
-		case podRestarted:
-			m.rebind(ctx, sb, p, why)
-		case podLost:
-			m.markLost(ctx, sb, []string{store.Running}, why)
-		}
-	}
-}
-
-// onTerminating starts an emergency save when the cluster begins shutting down a Running sandbox's pod.
-// Idempotent: only the Running → Pausing transition winner proceeds.
-func (m *Manager) onTerminating(pod, id string) {
-	ctx := context.Background()
-	cur, err := m.st.Get(ctx, "", id)
-	if err != nil || cur.State != store.Running || deref(cur.PodName) != pod {
-		return // already pausing/stopping (the server released it itself) or a stale pod
-	}
-	msg := "pod is being shut down by the cluster; saving workspace"
-	sb, err := m.st.Transition(ctx, id, []string{store.Running}, store.Pausing, "", store.Patch{StateMessage: &msg})
-	if err != nil {
-		return
-	}
-	m.log.Warn("pod shutting down, emergency save", "id", id, "pod", pod)
-	go m.pause(sb, true)
-}
-
-// markLost settles a sandbox whose pod is gone: resumable from the last snapshot if there is one, else Failed.
-func (m *Manager) markLost(ctx context.Context, sb *store.Sandbox, from []string, why string) {
-	clear := store.Patch{ClaimName: store.NullStr(), PodName: store.NullStr(), PodIP: store.NullStr(), ExecdToken: store.NullStr()}
-	to, msg := store.Failed, why+"; no saved snapshot, workspace lost"
-	if sb.SnapshotKey != nil {
-		to, msg = store.Paused, why+"; changes since the last pause were lost. Resume to continue from the last snapshot."
-	}
-	clear.StateMessage = &msg
-	if _, err := m.st.Transition(ctx, sb.ID, from, to, "lost", clear); err != nil {
-		return
-	}
-	if sb.ClaimName != nil {
-		_ = m.cell.Release(ctx, *sb.ClaimName)
-	}
-	m.log.Warn("sandbox pod lost", "id", sb.ID, "to", to, "why", why)
-}
-
-// rebind re-initialises execd after the sandbox container restarted inside the same pod. /workspace is an emptyDir
-// of the pod, so files survive; running processes do not.
-func (m *Manager) rebind(ctx context.Context, sb *store.Sandbox, p cell.PodInfo, why string) {
-	ip, token := deref(sb.PodIP), deref(sb.ExecdToken)
-	if err := execd.Bind(ctx, ip, sb.ID, sb.Generation, token, sb.Env, sb.Tenant); err != nil {
-		m.log.Error("rebind after container restart failed", "id", sb.ID, "err", err)
-		return // retried next tick
-	}
-	m.protect(ctx, sb.ID, p.Name, ip, token)
-	msg := "sandbox container restarted (" + why + "); files kept, running processes were lost"
-	_, _ = m.st.Transition(ctx, sb.ID, []string{store.Running}, store.Running, "restarted", store.Patch{StateMessage: &msg})
-	m.log.Warn("sandbox container restarted, re-bound", "id", sb.ID, "why", why)
-}
-
-func (m *Manager) reconcile(ctx context.Context) {
-	known, err := m.st.ActiveClaims(ctx)
-	if err != nil {
-		return
-	}
-	live, err := m.cell.ListClaims(ctx)
-	if err != nil {
-		return
-	}
-	for claim, sbID := range live {
-		if _, ok := known[claim]; !ok {
-			// Orphan: claim exists in the cluster but not in Postgres (crash between claim and record, or deleted).
-			if cur, err := m.st.Get(ctx, "", sbID); err == nil && (cur.State == store.Pending || cur.State == store.Resuming) {
-				continue // still being started
-			}
-			m.log.Warn("reaping orphan claim", "claim", claim, "sandbox", sbID)
-			_ = m.cell.Release(ctx, claim)
-		}
-	}
 }
 
 func deref(p *string) string {

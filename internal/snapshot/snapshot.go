@@ -30,6 +30,12 @@ func New(endpoint, accessKey, secretKey, bucket string, secure bool) (*Store, er
 
 func Prefix(sandboxID string, gen int64) string { return fmt.Sprintf("ws/%s/g%d/", sandboxID, gen) }
 
+// AutosavePrefix creates a distinct target for each periodic archive so it
+// never overwrites the last committed snapshot before the pointer transition.
+func AutosavePrefix(sandboxID string, gen int64, revision int64) string {
+	return fmt.Sprintf("%sauto/%020d/", Prefix(sandboxID, gen), revision)
+}
+
 func chunkKey(prefix string, i int) string { return fmt.Sprintf("%spart.%05d", prefix, i) }
 
 // PutURLs returns n presigned PUT URLs for chunks under prefix.

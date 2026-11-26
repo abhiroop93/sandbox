@@ -117,6 +117,23 @@ func TestPackUploadHydrateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPackDigestIsStable(t *testing.T) {
+	src := t.TempDir()
+	write(t, filepath.Join(src, "file.txt"), []byte("unchanged contents"))
+	packDigest := func() string {
+		out := captureStdout(t, func() error { return pack(src, filepath.Join(src, snapDir)) })
+		var result struct{ Digest string }
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result.Digest
+	}
+	first, second := packDigest(), packDigest()
+	if len(first) != 64 || first != second {
+		t.Fatalf("unchanged workspace must have one stable sha256 digest: %q %q", first, second)
+	}
+}
+
 func TestUploadRejectsChunkCountMismatch(t *testing.T) {
 	src := t.TempDir()
 	write(t, filepath.Join(src, "f"), []byte("x"))

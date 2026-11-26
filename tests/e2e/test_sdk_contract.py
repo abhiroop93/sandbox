@@ -5,8 +5,11 @@
 
 Optional: SANDBOX_IMAGE (default bakeoff-sandbox:dev, must have python3 + curl).
 """
+import json
 import os
 import time
+import urllib.error
+import urllib.request
 import uuid
 from datetime import timedelta
 
@@ -110,6 +113,53 @@ def test_pause_resume_preserves_workspace(sandbox):
     assert out(resumed, "sha256sum /workspace/repo/blob") == before
     assert out(resumed, "readlink /workspace/repo/link") == ".git/HEAD"
     assert out(resumed, "echo $E2E") == "yes"  # env re-bound on the new pod
+
+
+def test_pause_with_active_writer_creates_complete_archive(sandbox):
+    writer = (
+        "import time\n"
+        "size = 4096\n"
+        "with open('/workspace/active.bin', 'wb', buffering=0) as f:\n"
+        "    i = 0\n"
+        "    while True:\n"
+        "        header = f'{i}:'.encode()\n"
+        "        block = header.ljust(size - 1, b'x') + b'\\n'\n"
+        "        if f.write(block) != size:\n"
+        "            raise RuntimeError('partial block write')\n"
+        "        i += 1\n"
+        "        time.sleep(0.005)\n")
+    verifier = (
+        "size = 4096\n"
+        "raw = open('/workspace/active.bin', 'rb').read()\n"
+        "assert raw and len(raw) % size == 0, ('torn final block', len(raw))\n"
+        "for i in range(len(raw) // size):\n"
+        "    header = f'{i}:'.encode()\n"
+        "    expected = header.ljust(size - 1, b'x') + b'\\n'\n"
+        "    assert raw[i*size:(i+1)*size] == expected, ('bad block', i)\n"
+        "print('archive intact')\n")
+    sandbox.files.write_files([WriteEntry(path="/workspace/writer.py", data=writer),
+                               WriteEntry(path="/workspace/verify.py", data=verifier)])
+    out(sandbox, "nohup python3 /workspace/writer.py >/workspace/writer.log 2>&1 &")
+    time.sleep(0.3)
+    sandbox.pause()
+    deadline = time.time() + 120
+    while sandbox.get_info().status.state != "Paused":
+        assert time.time() < deadline, "pause with active writer did not complete"
+        time.sleep(0.2)
+    resumed = SandboxSync.resume(sandbox_id=sandbox.id, connection_config=cfg(), resume_timeout=timedelta(seconds=120))
+    assert out(resumed, "python3 /workspace/verify.py") == "archive intact"
+
+
+def test_unsupported_create_fields_rejected():
+    body = json.dumps({"image": {"uri": IMAGE}, "resourceLimits": {"cpu": "4"}}).encode()
+    req = urllib.request.Request(f"http://{DOMAIN}/v1/sandboxes", data=body, method="POST",
+                                 headers={"OPEN-SANDBOX-API-KEY": KEY, "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        raise AssertionError("resourceLimits must be rejected, not ignored")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+        assert exc.read()
 
 
 def test_list_and_delete():

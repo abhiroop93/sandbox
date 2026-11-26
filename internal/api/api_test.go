@@ -1,15 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/abhiroop93/sandbox/internal/cell"
 	"github.com/abhiroop93/sandbox/internal/lifecycle"
 	"github.com/abhiroop93/sandbox/internal/store"
 )
@@ -72,6 +75,51 @@ func TestErrorMapping(t *testing.T) {
 		if c.code == 429 && w.Header().Get("Retry-After") == "" {
 			t.Fatal("429 must carry Retry-After")
 		}
+	}
+}
+
+func TestCreateAcceptsSDKDefaultEntrypoint(t *testing.T) {
+	for _, body := range []string{
+		`{"image":{"uri":"python:3.12-slim"}}`,
+		`{"image":{"uri":"python:3.12-slim"},"entrypoint":["tail","-f","/dev/null"],"secureAccess":false,"extensions":{}}`,
+	} {
+		req, err := decodeCreateRequest(strings.NewReader(body))
+		if err != nil || !defaultEntrypoint(req.Entrypoint) {
+			t.Fatalf("SDK default create must decode: %+v %v", req, err)
+		}
+	}
+}
+
+func TestCreateRejectsUnsupportedFieldsAndTrailingJSON(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	lc := lifecycle.New(nil, cell.New(cell.Config{CPU: "1", Memory: "2Gi"}, nil, nil), nil, 1, "deny", log)
+	s := &Server{log: log, lc: lc}
+	cases := map[string]string{
+		"resource limits":    `{"image":{"uri":"python"},"resourceLimits":{"cpu":"4"}}`,
+		"resource requests":  `{"image":{"uri":"python"},"resourceRequests":{"cpu":"4"}}`,
+		"lifecycle policy":   `{"image":{"uri":"python"},"lifecycle":{"idleTimeout":30}}`,
+		"platform":           `{"image":{"uri":"python"},"platform":"k8s"}`,
+		"secure access":      `{"image":{"uri":"python"},"secureAccess":true}`,
+		"extensions":         `{"image":{"uri":"python"},"extensions":{"storage.id":"other"}}`,
+		"credential proxy":   `{"image":{"uri":"python"},"credentialProxy":{}}`,
+		"template":           `{"image":{"uri":"python"},"templateId":"t"}`,
+		"nested image auth":  `{"image":{"uri":"python","auth":{"username":"u"}}}`,
+		"volumes":            `{"image":{"uri":"python"},"volumes":[{}]}`,
+		"snapshot":           `{"image":{"uri":"python"},"snapshotId":"snap"}`,
+		"custom entrypoint":  `{"image":{"uri":"python"},"entrypoint":["python","main.py"]}`,
+		"unknown field":      `{"image":{"uri":"python"},"unknown":true}`,
+		"second JSON object": `{"image":{"uri":"python"}} {}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(body))
+			r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, "tenant"))
+			w := httptest.NewRecorder()
+			s.create(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("got %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

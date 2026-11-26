@@ -41,7 +41,12 @@ var (
 	ErrDuplicated = errors.New("already exists")
 )
 
-type Store struct{ db *pgxpool.Pool }
+type Store struct {
+	db *pgxpool.Pool
+	// MaxImages caps how many distinct images one tenant may have in live (non-terminal) sandboxes at once; each new
+	// image creates a warm pool in the cell. 0 disables the cap.
+	MaxImages int
+}
 
 func Open(ctx context.Context, url string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(url)
@@ -148,19 +153,22 @@ type Sandbox struct {
 	ClaimName, PodName, PodIP         *string
 	ExecdToken, SnapshotKey           *string
 	SnapshotBytes                     *int64
+	SnapshotDigest                    string
+	AutosaveAt                        *time.Time
 	ExpiresAt                         *time.Time
 	CreatedAt, UpdatedAt              time.Time
 }
 
 const cols = `id, tenant_id, cell_id, template, image, entrypoint, env, metadata, network, state, state_message,
-	generation, claim_name, pod_name, pod_ip, execd_token, snapshot_key, snapshot_bytes, expires_at, created_at, updated_at`
+	generation, claim_name, pod_name, pod_ip, execd_token, snapshot_key, snapshot_bytes, snapshot_digest, autosave_at,
+	expires_at, created_at, updated_at`
 
 func scan(r pgx.Row) (*Sandbox, error) {
 	var sb Sandbox
 	var ep, env, md []byte
 	err := r.Scan(&sb.ID, &sb.Tenant, &sb.Cell, &sb.Template, &sb.Image, &ep, &env, &md, &sb.Network, &sb.State,
 		&sb.StateMessage, &sb.Generation, &sb.ClaimName, &sb.PodName, &sb.PodIP, &sb.ExecdToken, &sb.SnapshotKey,
-		&sb.SnapshotBytes, &sb.ExpiresAt, &sb.CreatedAt, &sb.UpdatedAt)
+		&sb.SnapshotBytes, &sb.SnapshotDigest, &sb.AutosaveAt, &sb.ExpiresAt, &sb.CreatedAt, &sb.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -192,16 +200,31 @@ func (s *Store) InsertWithQuota(ctx context.Context, sb *Sandbox) error {
 	if running >= max {
 		return fmt.Errorf("%w: %d/%d running sandboxes", ErrQuota, running, max)
 	}
+	if s.MaxImages > 0 {
+		var images int
+		if err := tx.QueryRow(ctx, `SELECT count(DISTINCT template) FROM sandboxes WHERE tenant_id = $1 AND template <> $2
+			AND state IN ('Pending','Running','Resuming','Pausing','Paused','Stopping')`, sb.Tenant, sb.Template).Scan(&images); err != nil {
+			return err
+		}
+		if images >= s.MaxImages {
+			return fmt.Errorf("%w: %d distinct images in use (limit %d); reuse an image or terminate sandboxes", ErrQuota, images+1, s.MaxImages)
+		}
+	}
 	ep, _ := json.Marshal(sb.Entrypoint)
 	env, _ := json.Marshal(nonNil(sb.Env))
 	md, _ := json.Marshal(nonNil(sb.Metadata))
 	_, err = tx.Exec(ctx, `INSERT INTO sandboxes (id, tenant_id, cell_id, template, image, entrypoint, env, metadata,
-		network, state, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		sb.ID, sb.Tenant, sb.Cell, sb.Template, sb.Image, ep, env, md, nullJSON(sb.Network), Pending, sb.ExpiresAt)
+		network, state, generation, claim_name, execd_token, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		sb.ID, sb.Tenant, sb.Cell, sb.Template, sb.Image, ep, env, md, nullJSON(sb.Network), Pending,
+		sb.Generation, sb.ClaimName, sb.ExecdToken, sb.ExpiresAt)
 	if err != nil {
 		return err
 	}
-	if err := event(ctx, tx, sb.ID, sb.Tenant, "created", 0, nil); err != nil {
+	if err := event(ctx, tx, sb.ID, sb.Tenant, "created", sb.Generation, nil); err != nil {
+		return err
+	}
+	if err := enqueueTx(ctx, tx, &Job{SandboxID: sb.ID, Kind: JobStart, Generation: sb.Generation,
+		Payload: json.RawMessage(`{"hydrate":false}`)}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -259,6 +282,8 @@ type Patch struct {
 	ExecdToken     **string
 	SnapshotKey    **string
 	SnapshotBytes  **int64
+	SnapshotDigest *string
+	AutosaveAt     **time.Time
 	ExpiresAt      **time.Time
 }
 
@@ -266,8 +291,15 @@ func Str(s string) **string { p := &s; return &p }
 func NullStr() **string     { var p *string; return &p }
 
 // Transition atomically moves a sandbox from one of `from` to `to` (compare-and-set) and applies the patch.
-// Returns ErrConflict if the sandbox is not currently in an allowed state. Emits a usage event when `ev` != "".
 func (s *Store) Transition(ctx context.Context, id string, from []string, to, ev string, p Patch) (*Sandbox, error) {
+	return s.TransitionWithJob(ctx, id, from, to, ev, p, nil)
+}
+
+// TransitionWithJob additionally enqueues a desired job, or completes a leased
+// job, in the same transaction. A leased job acts as a revision/owner fence.
+// Returns ErrConflict if the sandbox is not currently in an allowed state or
+// the leased operation has been superseded. Emits a usage event when ev != "".
+func (s *Store) TransitionWithJob(ctx context.Context, id string, from []string, to, ev string, p Patch, job *Job) (*Sandbox, error) {
 	set := []string{"state = $3", "updated_at = now()"}
 	args := []any{id, from, to}
 	add := func(col string, v any) {
@@ -300,6 +332,12 @@ func (s *Store) Transition(ctx context.Context, id string, from []string, to, ev
 	if p.SnapshotBytes != nil {
 		add("snapshot_bytes", *p.SnapshotBytes)
 	}
+	if p.SnapshotDigest != nil {
+		add("snapshot_digest", *p.SnapshotDigest)
+	}
+	if p.AutosaveAt != nil {
+		add("autosave_at", *p.AutosaveAt)
+	}
 	if p.ExpiresAt != nil {
 		add("expires_at", *p.ExpiresAt)
 	}
@@ -308,6 +346,28 @@ func (s *Store) Transition(ctx context.Context, id string, from []string, to, ev
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if job != nil {
+		if job.Owner == "" {
+			// Use the same job → sandbox lock order as leased completion. This
+			// prevents supersession/completion deadlocks.
+			var locked string
+			err := tx.QueryRow(ctx, `SELECT sandbox_id FROM lifecycle_jobs WHERE sandbox_id = $1 FOR UPDATE`, id).Scan(&locked)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return nil, err
+			}
+		} else {
+			var one int
+			err := tx.QueryRow(ctx, `SELECT 1 FROM lifecycle_jobs
+				WHERE sandbox_id = $1 AND revision = $2 AND owner = $3 FOR UPDATE`,
+				job.SandboxID, job.Revision, job.Owner).Scan(&one)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrConflict
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	sb, err := scan(tx.QueryRow(ctx, `UPDATE sandboxes SET `+strings.Join(set, ", ")+
 		` WHERE id = $1 AND state = ANY($2) RETURNING `+cols, args...))
 	if errors.Is(err, ErrNotFound) {
@@ -320,6 +380,14 @@ func (s *Store) Transition(ctx context.Context, id string, from []string, to, ev
 		if err := event(ctx, tx, sb.ID, sb.Tenant, ev, sb.Generation, nil); err != nil {
 			return nil, err
 		}
+	}
+	if job != nil && job.Owner != "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM lifecycle_jobs WHERE sandbox_id = $1 AND revision = $2 AND owner = $3`,
+			job.SandboxID, job.Revision, job.Owner); err != nil {
+			return nil, err
+		}
+	} else if err := enqueueTx(ctx, tx, job); err != nil {
+		return nil, err
 	}
 	return sb, tx.Commit(ctx)
 }
@@ -346,6 +414,26 @@ func (s *Store) Expired(ctx context.Context, limit int) ([]*Sandbox, error) {
 // InStates returns all sandboxes currently in one of the given states (startup recovery).
 func (s *Store) InStates(ctx context.Context, states []string) ([]*Sandbox, error) {
 	rows, err := s.db.Query(ctx, `SELECT `+cols+` FROM sandboxes WHERE state = ANY($1) ORDER BY updated_at`, states)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Sandbox
+	for rows.Next() {
+		sb, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sb)
+	}
+	return out, rows.Err()
+}
+
+// AutosaveDue returns running sandboxes whose persisted archive deadline passed.
+func (s *Store) AutosaveDue(ctx context.Context, limit int) ([]*Sandbox, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+cols+` FROM sandboxes
+		WHERE state = 'Running' AND autosave_at IS NOT NULL AND autosave_at <= now()
+		ORDER BY autosave_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

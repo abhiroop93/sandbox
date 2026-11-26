@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -64,7 +65,11 @@ type Config struct {
 	ObjectStoreLabel string // pod label value app=<x> of object store
 	ShutdownGrace    int64  // terminationGracePeriodSeconds: time to save the workspace when a pod is shut down
 	NodeLossSeconds  int64  // evict pods from a NotReady/unreachable node after this long (k8s default: 300)
+	MaxTemplates     int    // most images (warm pools) the cell will hold at once; 0 = unlimited
 }
+
+// ErrTemplateLimit means the cell already holds MaxTemplates warm-pool images.
+var ErrTemplateLimit = errors.New("cell image limit reached")
 
 type Cell struct {
 	cfg Config
@@ -80,6 +85,12 @@ func New(cfg Config, dyn dynamic.Interface, k8s kubernetes.Interface) *Cell {
 		cfg.NodeLossSeconds = 30
 	}
 	return &Cell{cfg: cfg, dyn: dyn, k8s: k8s}
+}
+
+// FixedResources is the resource class applied to both requests and limits in
+// the current pod template. Create validation compares client requests to it.
+func (c *Cell) FixedResources() (cpu, memory string) {
+	return c.cfg.CPU, c.cfg.Memory
 }
 
 // TemplateName derives a stable template/pool name for an image (one warm pool per image).
@@ -101,15 +112,26 @@ func TemplateName(image string) string {
 	return "img-" + strings.Trim(clean, "-") + "-" + hex.EncodeToString(h[:])[:8]
 }
 
+// templateRevision changes when any effective pod configuration changes, so a
+// restarted server cannot validate resources against an older pod template.
+func (c *Cell) templateRevision() string {
+	fingerprint := fmt.Sprintf("%q", []string{c.cfg.RuntimeClass, c.cfg.ExecdImage, c.cfg.HelperImage,
+		c.cfg.CPU, c.cfg.Memory, c.cfg.DiskRequest, c.cfg.DiskLimit,
+		fmt.Sprint(c.cfg.ShutdownGrace), fmt.Sprint(c.cfg.NodeLossSeconds)})
+	h := sha256.Sum256([]byte(fingerprint))
+	return templateRev + "-" + hex.EncodeToString(h[:])[:12]
+}
+
 // EnsureTemplate creates (idempotently) the SandboxTemplate + SandboxWarmPool for an image.
 // Warm pods run execd in "await binding" mode (EXECD_RUNTIME_INIT) so per-sandbox identity, token and env
 // are pushed AFTER the claim (keeps the claim on the warm path; see docs/architecture.md D4).
 func (c *Cell) EnsureTemplate(ctx context.Context, image string, replicas int) (string, error) {
 	name := TemplateName(image)
+	revision := c.templateRevision()
 	ns := c.cfg.Namespace
 	cur, err := c.dyn.Resource(gvrTemplate).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		if cur.GetAnnotations()[AnnTemplateRev] == templateRev {
+		if cur.GetAnnotations()[AnnTemplateRev] == revision {
 			return name, nil
 		}
 		// An older version wrote this template: bring the pod template up to date. Only pods created from now on get it;
@@ -118,7 +140,7 @@ func (c *Cell) EnsureTemplate(ctx context.Context, image string, replicas int) (
 		if ann == nil {
 			ann = map[string]string{}
 		}
-		ann[AnnTemplateRev] = templateRev
+		ann[AnnTemplateRev] = revision
 		cur.SetAnnotations(ann)
 		if err := unstructured.SetNestedField(cur.Object, c.podTemplate(name, image), "spec", "podTemplate"); err != nil {
 			return "", err
@@ -131,10 +153,19 @@ func (c *Cell) EnsureTemplate(ctx context.Context, image string, replicas int) (
 	if !apierrors.IsNotFound(err) {
 		return "", err
 	}
+	if c.cfg.MaxTemplates > 0 {
+		list, err := c.dyn.Resource(gvrTemplate).Namespace(ns).List(ctx, metav1.ListOptions{LabelSelector: LabelManaged + "=true"})
+		if err != nil {
+			return "", fmt.Errorf("list templates: %w", err)
+		}
+		if len(list.Items) >= c.cfg.MaxTemplates {
+			return "", fmt.Errorf("%w: %d images already have warm pools (limit %d)", ErrTemplateLimit, len(list.Items), c.cfg.MaxTemplates)
+		}
+	}
 	tmpl := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxTemplate",
 		"metadata": map[string]any{"name": name, "namespace": ns,
-			"labels": map[string]any{LabelManaged: "true"}, "annotations": map[string]any{"sandbox.io/image": image, AnnTemplateRev: templateRev}},
+			"labels": map[string]any{LabelManaged: "true"}, "annotations": map[string]any{"sandbox.io/image": image, AnnTemplateRev: revision}},
 		"spec": map[string]any{
 			"networkPolicyManagement": "Unmanaged", // the server owns network policy (label-based, see EnsureBasePolicies)
 			"podTemplate":             c.podTemplate(name, image),
@@ -217,9 +248,15 @@ func (c *Cell) podTemplate(tmplName, image string) map[string]any {
 	}
 }
 
+// ClaimName is deterministic per sandbox generation (D6), so a replayed start
+// always reuses the same claim rather than allocating another pod generation.
+func ClaimName(sandboxID string, gen int64) string {
+	return fmt.Sprintf("sb-%s-g%d", sandboxID[:18], gen)
+}
+
 // Claim binds a warm pod to the sandbox. Returns claim name; the pod is discovered with WaitReady.
 func (c *Cell) Claim(ctx context.Context, template, sandboxID, tenant string, gen int64) (string, error) {
-	name := fmt.Sprintf("sb-%s-g%d", sandboxID[:18], gen) // deterministic per generation (D6)
+	name := ClaimName(sandboxID, gen)
 	claim := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim",
 		"metadata": map[string]any{"name": name, "namespace": c.cfg.Namespace,

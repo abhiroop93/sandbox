@@ -19,12 +19,14 @@ the API key for the execd token), `metrics/events` (accepted, discarded).
 | Field | Today |
 |---|---|
 | `volumes`, `snapshotId`, FQDN `networkPolicy` rules | Rejected with 400 |
-| `entrypoint` | Accepted, **not executed** (API-driven sandboxes; see "Entrypoint execution") |
-| `resourceLimits` / `resourceRequests` | **Silently ignored**: one fixed size (roadmap: resource classes) |
-| `lifecycle` (hooks, idle/renewal policy), `platform`, `secureAccess`, `extensions`, `image.auth`, `credentialProxy`, `templateId` | **Silently ignored** |
+| `entrypoint` | Empty/default `tail -f /dev/null` accepted for SDK compatibility; custom commands rejected with 400 (use execd commands) |
+| `resourceLimits` / `resourceRequests` | CPU/memory matching the server's one configured resource class are applied; other quantities or dimensions rejected with 400 |
+| `secureAccess` | Explicit `false` accepted (the SDK default); `true` rejected with 400 |
+| `extensions` | Empty `{}` accepted; non-empty values rejected with 400 |
+| `lifecycle` (hooks, idle/renewal policy), `platform`, `image.auth`, `credentialProxy`, `templateId` and unknown fields | Rejected with 400 |
 
-Silently ignored fields are a correctness risk (a client asking for 4 CPUs gets the default); first fix when work
-starts: reject them with 400 until supported.
+Request decoding also rejects trailing JSON objects. Unsupported fields are never silently ignored: an unsupported
+resource, lifecycle or security request cannot be mistaken for effective configuration.
 
 **In-sandbox API (execd, ~60 operations, passed through unmodified):**
 | Area | Status |

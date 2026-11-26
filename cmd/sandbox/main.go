@@ -79,6 +79,7 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	st.MaxImages = envInt("MAX_IMAGES_PER_TENANT", 10)
 	defer st.Close()
 
 	rc, err := rest.InClusterConfig()
@@ -88,6 +89,7 @@ func serve(ctx context.Context) error {
 		}
 	}
 	rc.QPS, rc.Burst = 50, 100
+	rc.Timeout = time.Duration(envInt("KUBERNETES_REQUEST_TIMEOUT_SECONDS", 30)) * time.Second
 	dyn, err := dynamic.NewForConfig(rc)
 	if err != nil {
 		return err
@@ -103,14 +105,15 @@ func serve(ctx context.Context) error {
 		ExecdImage:       env("EXECD_IMAGE", "docker.io/opensandbox/execd:release-1.2.0"),
 		HelperImage:      env("HELPER_IMAGE", "sandbox:dev"),
 		DefaultPoolSize:  envInt("POOL_SIZE", 2),
-		CPU:              env("SANDBOX_CPU", "500m"),
-		Memory:           env("SANDBOX_MEMORY", "1Gi"),
+		CPU:              env("SANDBOX_CPU", "1"),
+		Memory:           env("SANDBOX_MEMORY", "2Gi"),
 		DiskRequest:      env("SANDBOX_DISK_REQUEST", "512Mi"),
 		DiskLimit:        env("SANDBOX_DISK_LIMIT", "6Gi"),
 		ObjectStorePort:  envInt("OBJECT_STORE_PORT", 8080),
 		ObjectStoreLabel: env("OBJECT_STORE_APP_LABEL", "s3"),
 		ShutdownGrace:    int64(envInt("SHUTDOWN_GRACE_SECONDS", 90)),
 		NodeLossSeconds:  int64(envInt("NODE_LOSS_SECONDS", 30)),
+		MaxTemplates:     envInt("MAX_IMAGES", 50),
 	}, dyn, k8s)
 	if err := c.EnsureBasePolicies(ctx); err != nil {
 		return fmt.Errorf("base network policies: %w", err)
@@ -122,7 +125,10 @@ func serve(ctx context.Context) error {
 	}
 	lc := lifecycle.New(st, c, snap, envInt("POOL_SIZE", 2), env("DEFAULT_EGRESS", "deny"), log)
 	lc.ShutdownGrace = time.Duration(envInt("SHUTDOWN_GRACE_SECONDS", 90)) * time.Second
-	lc.RecoverInterrupted(ctx) // settle operations a previous process left half-done (no durable queue yet)
+	lc.WorkerCount = envInt("JOB_WORKERS", 4)
+	lc.AutosaveInterval = time.Duration(envInt("AUTOSAVE_INTERVAL_SECONDS", 0)) * time.Second
+	lc.ReconcileTimeout = time.Duration(envInt("RECONCILE_TIMEOUT_SECONDS", 30)) * time.Second
+	lc.RecoverInterrupted(ctx) // reconstruct jobs only for rows written by pre-queue versions
 	go lc.Loop(ctx)
 
 	srv := &http.Server{Addr: env("LISTEN", ":8080"),

@@ -9,11 +9,11 @@ Ordered by risk: losing work, breaking isolation, waking someone up.
 
 | # | Item | Why |
 |---|---|---|
-| 1 | **Durable work queue → multiple server replicas** | Create/pause/resume run in-process: one replica, and an interrupted operation isn't retried (startup recovery settles it today). A Postgres-backed queue with idempotent steps per (sandbox, generation) unlocks HA. |
+| 1 | **Validate multiple server replicas** | Postgres jobs now lease, retry and fence lifecycle work; deterministic generations and per-sandbox advisory locks protect replay. Kind uses one replica. Run sustained multiple-replica and failover tests before increasing replicas. |
 | 2 | **Admission control + a real capacity run** | An exhausted cell makes callers hang (115 s on kind). Per-cell rate budget, queue with deadline, `503` + `Retry-After`, and unschedulable reasons in `status.message`. Measure the per-cell ceiling on a dedicated GKE cluster (`bakeoff/` with `TARGET=gke`) to set the budget. |
 | 3 | **Operate it:** metrics, dashboards, TLS, CI | Prometheus metrics (create/claim/hydrate latency, pool depth, API-server write latency), alerts and runbooks; TLS ingress (keys travel in headers); CI running unit + kind e2e tests. |
 | 4 | **Idle auto-pause** | The biggest cost and capacity lever: abandoned sandboxes dominate spend (D15). |
-| 5 | **Incremental snapshots → periodic autosave** | A node crash loses everything since the last pause. Content-addressed chunks make re-pause upload only changes and make autosave every N minutes affordable; also makes resume time near-constant. |
+| 5 | **Incremental/deduplicated snapshots** | Optional periodic full, process-quiesced autosave now bounds the crash recovery point. Add content-addressed or incremental chunks to reduce repeated upload time, storage and remaining resume cost. |
 
 ## 2. Runtime: gVisor today, Firecracker when scale or speed matters
 gVisor is the right start: it runs on any Kubernetes node, including laptops and managed node pools (D5). But it is
@@ -44,7 +44,7 @@ agent when the scale or speed triggers above fire.
 |---|---|
 | **Domain allowlists + credential vault** | Cilium FQDN egress rules (rejected with 400 today) and secrets injected at egress, never in the sandbox (D8) |
 | **Snapshots API and fork** | Named snapshots and create-from-snapshot, built on pause snapshots (D6) |
-| **Resource classes** | Honour `resourceLimits` with a few sizes (today one fixed size; the field is silently ignored) |
+| **Resource classes** | Support a few sizes; today matching CPU/memory values apply the one configured class and every other request is rejected with 400 |
 | **Preview URLs** | `https://<port>-<id>.<preview-domain>` on a separate domain (D12) |
 | **Console** | OpenSandbox's console already works for core flows (validation.md §7); add diagnostics logs/events and remove its copy of tenant keys |
 
@@ -56,8 +56,8 @@ agent when the scale or speed triggers above fire.
 | **Functions layer** | `@function` / `.remote()` / `.map()` on claim → exec → recycle (D1) |
 | **GPU sandboxes** | gVisor `nvproxy` or Kata, GPU node pools, read-only model volumes (D13) |
 
-**Smaller items, not tracked individually:** reject silently ignored create fields with 400; snapshot and record
-garbage collection (terminated rows are kept forever today); report OpenSandbox's gVisor pause bug upstream and an
+**Smaller items, not tracked individually:** snapshot and record garbage collection (terminated rows and superseded
+upload attempts need collection); report OpenSandbox's gVisor pause bug upstream and an
 execd init-auth fix; resume-while-pausing; entrypoint execution; SSO for console users; usage showback.
 
 ## Signals to re-evaluate decisions

@@ -13,7 +13,7 @@ Two audiences:
 | agent-sandbox `v1.0.10` (+ extensions) | `agent-sandbox-system` | **Must allowlist the `sandbox.io` label domain** (§3) |
 | Postgres | Managed (Cloud SQL / RDS) in prod; a pod on kind | Only stateful dependency besides object storage |
 | S3-API object storage + bucket | GCS (HMAC/S3 interop), S3, OCI, MinIO… | Workspace snapshots. Sandboxes reach it via presigned URLs only. |
-| **server** (Deployment + Service) | `sandbox-system` | One stateless binary. Sandboxes run in `sandboxes`. |
+| **server** (Deployment + Service) | `sandbox-system` | One binary. Postgres persists desired jobs and leases; external pod state remains in CRDs. Sandboxes run in `sandboxes`. |
 
 ## 2. Local setup (kind): about 15 minutes
 Prereqs: Docker Desktop (≥ 8 GB; 12+ GB recommended), kind, kubectl, Go ≥ 1.26, Python 3 + `uv` (helm only for the OpenSandbox comparison in `bakeoff/opensandbox/`).
@@ -46,7 +46,13 @@ Health check: `curl 127.0.0.1:18081/health` → `{"status":"healthy"}`.
 | `EXECD_IMAGE` | `docker.io/opensandbox/execd:release-1.2.0` | execd injected into every sandbox |
 | `HELPER_IMAGE` | `sandbox:dev` | Image providing `/sandbox-snap` (same image as the server) |
 | `POOL_SIZE` | `2` | Warm pods per image (pool created on first use of an image) |
-| `SANDBOX_CPU` / `SANDBOX_MEMORY` | `500m` / `1Gi` (kind manifest: `1` / `2Gi`) | Size of every sandbox (resource classes are on the roadmap) |
+| `MAX_IMAGES_PER_TENANT` | `10` | Most distinct images one tenant can have in live sandboxes; a create past it gets `429`/quota error. Each new image makes a warm pool. `0` disables. |
+| `MAX_IMAGES` | `50` | Most images (warm pools) the whole cell holds; further new images fail to start. `0` disables. |
+| `JOB_WORKERS` | `4` | Leased lifecycle workers per server process; per-sandbox Postgres locks prevent concurrent external effects. |
+| `AUTOSAVE_INTERVAL_SECONDS` | `0` (kind: `300`) | Full process-quiesced workspace archive interval. `0` disables. Processes stop only during packing, then continue during upload. |
+| `RECONCILE_TIMEOUT_SECONDS` | `30` | Bound on each combined pod/claim reconciliation pass. |
+| `KUBERNETES_REQUEST_TIMEOUT_SECONDS` | `30` | Per-request Kubernetes API client timeout. |
+| `SANDBOX_CPU` / `SANDBOX_MEMORY` | `1` / `2Gi` (kind: `1` / `2Gi`) | The one fixed resource class, applied to requests and limits. Matching SDK values are accepted; others return 400. |
 | `SANDBOX_DISK_REQUEST` / `SANDBOX_DISK_LIMIT` | `512Mi` / `6Gi` | Ephemeral-storage reserved / hard cap (workspace + snapshot staging). Keep the request small. |
 | `DEFAULT_EGRESS` | `deny` | Egress when a create has no `networkPolicy` (`deny` = DNS + object store only) |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_SECURE` | in-cluster rclone | Snapshot storage. The endpoint must be reachable **from sandboxes** (presigned URLs). |
@@ -103,7 +109,9 @@ curl -XDELETE -H "X-SANDBOX-ADMIN-TOKEN: $T" localhost:18081/admin/v1/keys/key_1
 | Node drain takes ~90 s per node | Expected: armed sandbox pods are held while their workspace is saved. Pause sandboxes before draining to make it fast. |
 | Pods can't schedule even though CPU/memory are free | Ephemeral-storage requests. Keep `SANDBOX_DISK_REQUEST` small. |
 | Cold creates for a new image | Expected on first use: a pool is created, then later creates are warm. Pre-pull hot images on sandbox nodes. |
-| After Docker / node restart | The cluster comes back on its own. Re-run your port-forward. Operations in flight during the outage show `Failed` ("interrupted by server restart"); create or resume again. On kind, Postgres data survives a restart but not a pod *recreation* (emptyDir). |
+| After Docker / node restart | The cluster comes back on its own. Re-run your port-forward. Durable jobs resume after their lease is reclaimed; create/pause/resume should not need manual retry solely because the server restarted. On kind, Postgres data survives a process restart but not a pod *recreation* (emptyDir). |
+| Autosave latency or temporary `Pausing` | Expected only when enabled: workload processes are quiesced during archive packing and resumed before upload. Disable with `AUTOSAVE_INTERVAL_SECONDS=0` or increase the interval. |
+| Create returns 400 for resource fields | Requests must match the configured `SANDBOX_CPU` and `SANDBOX_MEMORY` exactly (equivalent CPU quantities such as `1000m` are accepted). Other resource classes are not silently substituted. |
 | Logs | `kubectl -n sandbox-system logs deploy/sandbox` (JSON). `sandbox running` / `sandbox paused` lines carry claim, bind, hydrate, pack and upload timings. |
 
 ---
@@ -173,4 +181,6 @@ TypeScript, Java/Kotlin and C# SDKs exist too (same API). They should work throu
 | Expiry | `timeout` (default 10 min in the SDK) is a hard expiry. Extend with `renew()`. Expired sandboxes and their snapshots are deleted. |
 | Quotas | Too many running sandboxes → `429` with `Retry-After`. Pause or kill idle ones. |
 | Many sessions | Any number of concurrent commands and file operations share one sandbox (one pod). For parallel, isolated work, create more sandboxes. |
-| Not supported yet | `volumes`, `snapshotId`, per-sandbox `resourceLimits` (fixed size), credential vault, FQDN rules, running `entrypoint` (sandboxes are API-driven; start long-running processes with `commands.run`). |
+| Resources | One configured CPU/memory class. `resourceLimits` and `resourceRequests` are honored when they match it; other values return 400. |
+| Not supported yet | `volumes`, `snapshotId`, additional resource classes, credential vault, FQDN rules, custom `entrypoint` commands (sandboxes are API-driven; start long-running processes with `commands.run`). |
+| Pause consistency / autosave | Workload processes are quiesced only while the archive is packed, then thawed. This prevents concurrent file mutation during packing; it does not provide application-transaction or memory/process persistence. Autosave uploads full archives and is operator opt-in outside kind. |
